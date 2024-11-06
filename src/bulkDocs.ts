@@ -13,9 +13,9 @@ import {
   BY_SEQ_STORE,
   ATTACH_STORE,
   ATTACH_AND_SEQ_STORE,
-} from './constants'
+} from './constants/constants'
 
-import { select, stringifyDoc, compactRevs, handleSQLiteError } from './utils'
+import { buildSelectQuery, stringifyDocument, cleanupOldRevisions, handleDatabaseError } from './utils'
 import type { Transaction } from '@op-engineering/op-sqlite'
 
 interface DocInfo {
@@ -123,7 +123,7 @@ async function sqliteBulkDocs(
         revsToCompact = compactTree(docInfo.metadata).concat(revsToCompact)
       }
       if (revsToCompact.length) {
-        compactRevs(revsToCompact, id, tx)
+        cleanupOldRevisions(revsToCompact, id, tx)
       }
 
       docInfo.metadata.seq = seq
@@ -196,7 +196,7 @@ async function sqliteBulkDocs(
 
     const id = data._id
     const rev = data._rev
-    const json = stringifyDoc(data)
+    const json = stringifyDocument(data)
     const sql =
       'INSERT INTO ' +
       BY_SEQ_STORE +
@@ -213,7 +213,7 @@ async function sqliteBulkDocs(
     } catch (e) {
       // constraint error, recover by updating instead (see #1638)
       // https://github.com/pouchdb/pouchdb/issues/1638
-      const fetchSql = select('seq', BY_SEQ_STORE, null, 'doc_id=? AND rev=?')
+      const fetchSql = buildSelectQuery('seq', BY_SEQ_STORE, null, 'doc_id=? AND rev=?')
       const res = await tx.executeAsync(fetchSql, [id, rev])
       const seq = res.rows?.item(0).seq
       console.log(
@@ -316,7 +316,7 @@ async function sqliteBulkDocs(
       await websqlProcessDocs()
       sqliteChanges.notify(api._name)
     } catch (err: any) {
-      throw handleSQLiteError(err)
+      throw handleDatabaseError(err)
     }
   })
 

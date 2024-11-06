@@ -28,124 +28,80 @@ import {
   LOCAL_STORE,
   META_STORE,
   ATTACH_AND_SEQ_STORE,
-} from './constants'
+  TABLE_QUERIES,
+  INDEX_QUERIES,
+} from './constants/constants'
 
 import {
-  qMarks,
-  stringifyDoc,
-  unstringifyDoc,
-  select,
-  compactRevs,
-  handleSQLiteError,
-} from './utils'
+  generateQuestionMarks,
+  stringifyDocument,
+  parseDocument,
+  buildSelectQuery,
+  cleanupOldRevisions,
+  handleDatabaseError,
+} from './utils/utils'
+import { SqliteOptions, SqliteService } from './SQLiteService'
 
-import { DbOptions, SQLiteService } from './SQLiteService';
+// Join condition for DOC_STORE and BY_SEQ_STORE tables
+const DOC_STORE_AND_BY_SEQ_JOINER = `${BY_SEQ_STORE}.seq = ${DOC_STORE}.winningseq`
 
-// these indexes cover the ground for most allDocs queries
-const BY_SEQ_STORE_DELETED_INDEX_SQL =
-  "CREATE INDEX IF NOT EXISTS 'by-seq-deleted-idx' ON " +
-  BY_SEQ_STORE +
-  ' (seq, deleted)'
-const BY_SEQ_STORE_DOC_ID_REV_INDEX_SQL =
-  "CREATE UNIQUE INDEX IF NOT EXISTS 'by-seq-doc-id-rev' ON " +
-  BY_SEQ_STORE +
-  ' (doc_id, rev)'
-const DOC_STORE_WINNINGSEQ_INDEX_SQL =
-  "CREATE INDEX IF NOT EXISTS 'doc-winningseq-idx' ON " +
-  DOC_STORE +
-  ' (winningseq)'
-const ATTACH_AND_SEQ_STORE_SEQ_INDEX_SQL =
-  "CREATE INDEX IF NOT EXISTS 'attach-seq-seq-idx' ON " +
-  ATTACH_AND_SEQ_STORE +
-  ' (seq)'
-const ATTACH_AND_SEQ_STORE_ATTACH_INDEX_SQL =
-  "CREATE UNIQUE INDEX IF NOT EXISTS 'attach-seq-digest-idx' ON " +
-  ATTACH_AND_SEQ_STORE +
-  ' (digest, seq)'
-
-const DOC_STORE_AND_BY_SEQ_JOINER =
-  BY_SEQ_STORE + '.seq = ' + DOC_STORE + '.winningseq'
-
-const SELECT_DOCS =
-  BY_SEQ_STORE +
-  '.seq AS seq, ' +
-  BY_SEQ_STORE +
-  '.deleted AS deleted, ' +
-  BY_SEQ_STORE +
-  '.json AS data, ' +
-  BY_SEQ_STORE +
-  '.rev AS rev, ' +
-  DOC_STORE +
-  '.json AS metadata'
+// Select statement for fetching document data
+const SELECT_DOCS = `
+  ${BY_SEQ_STORE}.seq AS seq,
+  ${BY_SEQ_STORE}.deleted AS deleted,
+  ${BY_SEQ_STORE}.json AS data,
+  ${BY_SEQ_STORE}.rev AS rev,
+  ${DOC_STORE}.json AS metadata
+`
 
 const sqliteChanges = new Changes()
 
-async function SQLitePouchCore(options: DbOptions, callback: (err: any) => void) {
+async function SQLitePouchCore(
+  options: SqliteOptions,
+  callback: (err: any) => void
+) {
   // @ts-ignore
-  let api = this as any
-  // let db: DB
-  // @ts-ignore
-  let txnQueue: TransactionQueue
+  let api: any = this
   let instanceId: string
-  let encoding: string = 'UTF-8'
+
   api.auto_compaction = false
 
-  api._name = options.dbName
+  api._name = options.databaseName
   console.log('Creating SqlPouch instance: %s', api._name)
 
-  const sqliteService = new SQLiteService(options.platform);
-  await sqliteService.initializePlugin();
-  await sqliteService.openDatabase(options);
+  // DB 초기화
+  const sqliteService = new SqliteService(options)
+  await sqliteService.initializeSqlite()
 
-  const sqlOpts = Object.assign({}, opts, { name: opts.name + '.sqlite' })
-  const openDBResult = openDB(sqlOpts)
-  if ('db' in openDBResult) {
-    db = openDBResult.db
-    txnQueue = openDBResult.transactionQueue
-    setup(callback)
-    console.log('Database was opened successfully.', db.getDbPath())
-  } else {
-    handleSQLiteError(openDBResult.error, callback)
-  }
-
-  async function transaction(fn: (tx: Transaction) => Promise<void>) {
-    return txnQueue.push(fn)
-  }
-
-  async function readTransaction(fn: (tx: Transaction) => Promise<void>) {
-    return txnQueue.pushReadOnly(fn)
-  }
+  setup(callback)
+  console.log('Database was opened successfully.')
 
   async function setup(callback: (err: any) => void) {
-    await db.transaction(async (tx) => {
-      checkEncoding(tx)
-      fetchVersion(tx)
+    await sqliteService.executeTransaction(async () => {
+      fetchVersion()
     })
-    callback(null)
   }
 
-  function checkEncoding(tx: Transaction) {
-    const res = tx.execute("SELECT HEX('a') AS hex")
-    const hex = res.rows?.item(0).hex
-    encoding = hex.length === 2 ? 'UTF-8' : 'UTF-16'
-  }
-
-  function fetchVersion(tx: Transaction) {
+  async function fetchVersion() {
     const sql = 'SELECT sql FROM sqlite_master WHERE tbl_name = ' + META_STORE
-    const result = tx.execute(sql, [])
-    if (!result.rows?.length) {
+    const result: any[] = await sqliteService.query(sql, [])
+    if (!result?.length) {
       onGetVersion(tx, 0)
     } else if (!/db_version/.test(result.rows.item(0).sql)) {
-      tx.execute('ALTER TABLE ' + META_STORE + ' ADD COLUMN db_version INTEGER')
+      await sqliteService.execute(
+        'ALTER TABLE ' + META_STORE + ' ADD COLUMN db_version INTEGER'
+      )
       onGetVersion(tx, 1)
     } else {
-      const resDBVer = tx.execute('SELECT db_version FROM ' + META_STORE)
+      const resDBVer = await sqliteService.execute(
+        'SELECT db_version FROM ' + META_STORE
+      )
       const dbVersion = resDBVer.rows?.item(0).db_version
       onGetVersion(tx, dbVersion)
     }
   }
 
-  function onGetVersion(tx: Transaction, dbVersion: number) {
+  function onGetVersion(dbVersion: number) {
     if (dbVersion === 0) {
       createInitialSchema(tx)
     } else {
@@ -153,57 +109,27 @@ async function SQLitePouchCore(options: DbOptions, callback: (err: any) => void)
     }
   }
 
-  function createInitialSchema(tx: Transaction) {
-    const meta =
-      'CREATE TABLE IF NOT EXISTS ' + META_STORE + ' (dbid, db_version INTEGER)'
-    const attach =
-      'CREATE TABLE IF NOT EXISTS ' +
-      ATTACH_STORE +
-      ' (digest UNIQUE, escaped TINYINT(1), body BLOB)'
-    const attachAndRev =
-      'CREATE TABLE IF NOT EXISTS ' +
-      ATTACH_AND_SEQ_STORE +
-      ' (digest, seq INTEGER)'
-    const doc =
-      'CREATE TABLE IF NOT EXISTS ' +
-      DOC_STORE +
-      ' (id unique, json, winningseq, max_seq INTEGER UNIQUE)'
-    const seq =
-      'CREATE TABLE IF NOT EXISTS ' +
-      BY_SEQ_STORE +
-      ' (seq INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT, json, deleted TINYINT(1), doc_id, rev)'
-    const local =
-      'CREATE TABLE IF NOT EXISTS ' + LOCAL_STORE + ' (id UNIQUE, rev, json)'
-
-    tx.execute(attach)
-    tx.execute(local)
-    tx.execute(attachAndRev)
-    tx.execute(ATTACH_AND_SEQ_STORE_SEQ_INDEX_SQL)
-    tx.execute(ATTACH_AND_SEQ_STORE_ATTACH_INDEX_SQL)
-    tx.execute(doc)
-    tx.execute(DOC_STORE_WINNINGSEQ_INDEX_SQL)
-    tx.execute(seq)
-    tx.execute(BY_SEQ_STORE_DELETED_INDEX_SQL)
-    tx.execute(BY_SEQ_STORE_DOC_ID_REV_INDEX_SQL)
-    tx.execute(meta)
+  async function createInitialSchema() {
+    await sqliteService.execute(TABLE_QUERIES.attach)
+    await sqliteService.execute(TABLE_QUERIES.local)
+    await sqliteService.execute(TABLE_QUERIES.attachAndRev)
+    await sqliteService.execute(INDEX_QUERIES.attachAndSeqSeqIndex)
+    await sqliteService.execute(INDEX_QUERIES.attachAndSeqDigestIndex)
+    await sqliteService.execute(TABLE_QUERIES.doc)
+    await sqliteService.execute(INDEX_QUERIES.docWinningSeqIndex)
+    await sqliteService.execute(TABLE_QUERIES.seq)
+    await sqliteService.execute(INDEX_QUERIES.bySeqDeletedIndex)
+    await sqliteService.execute(INDEX_QUERIES.bySeqDocIdRevIndex)
+    await sqliteService.execute(TABLE_QUERIES.meta)
     const initSeq =
       'INSERT INTO ' + META_STORE + ' (db_version, dbid) VALUES (?,?)'
     instanceId = uuid()
     const initSeqArgs = [ADAPTER_VERSION, instanceId]
-    tx.execute(initSeq, initSeqArgs)
+    await sqliteService.execute(initSeq, initSeqArgs)
     onGetInstanceId()
   }
 
-  async function runMigrations(tx: Transaction, dbVersion: number) {
-    // const tasks = [setupDone]
-    //
-    // let i = dbVersion
-    // const nextMigration = (tx: Transaction) => {
-    //   tasks[i - 1](tx, nextMigration)
-    //   i++
-    // }
-    // nextMigration(tx)
-
+  async function runMigrations(dbVersion: number) {
     const migrated = dbVersion < ADAPTER_VERSION
     if (migrated) {
       db.execute(
@@ -221,24 +147,25 @@ async function SQLitePouchCore(options: DbOptions, callback: (err: any) => void)
 
   api._remote = false
 
+  // 신규 ID 반환
   api._id = (callback: (err: any, id?: string) => void) => {
     callback(null, instanceId)
   }
 
   api._info = (callback: (err: any, info?: any) => void) => {
-    readTransaction(async (tx: Transaction) => {
-      try {
-        const seq = await getMaxSeq(tx)
-        const docCount = await countDocs(tx)
-        callback(null, {
-          doc_count: docCount,
-          update_seq: seq,
-          sqlite_encoding: encoding,
-        })
-      } catch (e: any) {
-        handleSQLiteError(e, callback)
-      }
-    })
+    try {
+      const maxSequence = await getMaxSequence()
+      const documentCount = await getCountDocuments()
+      const sqliteEncoding = await getEncoding()
+
+      callback(null, {
+        doc_count: documentCount,
+        update_seq: maxSequence,
+        sqlite_encoding: sqliteEncoding,
+      })
+    } catch (e: any) {
+      handleDatabaseError(e, callback)
+    }
   }
 
   api._bulkDocs = async (
@@ -258,87 +185,71 @@ async function SQLitePouchCore(options: DbOptions, callback: (err: any) => void)
       )
       callback(null, response)
     } catch (err: any) {
-      handleSQLiteError(err, callback)
+      handleDatabaseError(err, callback)
     }
   }
 
-  api._get = (
+  api._get = async (
     id: string,
     opts: any,
     callback: (err: any, response?: any) => void
   ) => {
     console.log('get:', id)
-    let doc: any
-    let metadata: any
-    const tx: Transaction = opts.ctx
+
+    const { ctx: tx } = opts
     if (!tx) {
-      readTransaction(async (txn) => {
-        return new Promise((resolve) => {
-          api._get(
-            id,
-            Object.assign({ ctx: txn }, opts),
-            (err: any, response: any) => {
-              callback(err, response)
-              resolve()
-            }
-          )
-        })
-      })
-      return
+      return readTransaction(async (txn) =>
+        api._get(id, { ...opts, ctx: txn }, callback)
+      )
     }
 
-    const finish = (err: any) => {
-      callback(err, { doc, metadata, ctx: tx })
-    }
+    const finish = (err: any) => callback(err, { doc, metadata, ctx: tx })
 
     let sql: string
-    let sqlArgs: any[]
+    let sqlArgs: any[] = []
 
-    if (!opts.rev) {
-      sql = select(
+    if (opts.rev) {
+      sql = buildSelectQuery(
         SELECT_DOCS,
         [DOC_STORE, BY_SEQ_STORE],
-        DOC_STORE_AND_BY_SEQ_JOINER,
-        DOC_STORE + '.id=?'
+        `${DOC_STORE}.id=${BY_SEQ_STORE}.doc_id`,
+        [`${BY_SEQ_STORE}.doc_id=?`, `${BY_SEQ_STORE}.rev=?`]
       )
-      sqlArgs = [id]
+      sqlArgs = [id, opts.rev]
     } else if (opts.latest) {
-      latest(
+      return latest(
         tx,
         id,
         opts.rev,
-        (latestRev: string) => {
-          opts.latest = false
-          opts.rev = latestRev
-          api._get(id, opts, callback)
-        },
+        (latestRev: string) =>
+          api._get(id, { ...opts, rev: latestRev, latest: false }, callback),
         finish
       )
-      return
     } else {
-      sql = select(
+      sql = buildSelectQuery(
         SELECT_DOCS,
         [DOC_STORE, BY_SEQ_STORE],
-        DOC_STORE + '.id=' + BY_SEQ_STORE + '.doc_id',
-        [BY_SEQ_STORE + '.doc_id=?', BY_SEQ_STORE + '.rev=?']
+        `${DOC_STORE}.id=?`
       )
-      sqlArgs = [id, opts.rev]
+      sqlArgs = [id]
     }
 
-    tx.executeAsync(sql, sqlArgs).then((results) => {
-      if (!results.rows?.length) {
-        const missingErr = createError(MISSING_DOC, 'missing')
-        return finish(missingErr)
-      }
+    try {
+      const results = await sqliteService.query(sql, sqlArgs)
+      if (!results.rows?.length)
+        return finish(createError(MISSING_DOC, 'missing'))
+
       const item = results.rows.item(0)
       metadata = safeJsonParse(item.metadata)
-      if (item.deleted && !opts.rev) {
-        const deletedErr = createError(MISSING_DOC, 'deleted')
-        return finish(deletedErr)
-      }
-      doc = unstringifyDoc(item.data, metadata.id, item.rev)
+
+      if (item.deleted && !opts.rev)
+        return finish(createError(MISSING_DOC, 'deleted'))
+
+      doc = parseDocument(item.data, metadata.id, item.rev)
       finish(null)
-    })
+    } catch (err) {
+      finish(err)
+    }
   }
 
   api._allDocs = (opts: any, callback: (err: any, response?: any) => void) => {
@@ -403,7 +314,7 @@ async function SQLitePouchCore(options: DbOptions, callback: (err: any) => void)
           const item = rows[i]
           const metadata = safeJsonParse(item.metadata)
           const id = metadata.id
-          const data = unstringifyDoc(item.data, id, item.rev)
+          const data = parseDocument(item.data, id, item.rev)
           const winningRev = data._rev
           const doc: any = {
             id: id,
@@ -449,8 +360,8 @@ async function SQLitePouchCore(options: DbOptions, callback: (err: any) => void)
       }
 
       try {
-        const totalRows = await countDocs(tx)
-        const updateSeq = opts.update_seq ? await getMaxSeq(tx) : undefined
+        const totalRows = await getCountDocuments(tx)
+        const updateSeq = opts.update_seq ? await getMaxSequence(tx) : undefined
 
         if (limit === 0) {
           limit = 1
@@ -471,7 +382,7 @@ async function SQLitePouchCore(options: DbOptions, callback: (err: any) => void)
             sqlArgs = sqlArgs.concat(keyChunk)
 
             const sql =
-              select(
+              buildSelectQuery(
                 SELECT_DOCS,
                 [DOC_STORE, BY_SEQ_STORE],
                 DOC_STORE_AND_BY_SEQ_JOINER,
@@ -482,7 +393,7 @@ async function SQLitePouchCore(options: DbOptions, callback: (err: any) => void)
               limit +
               ' OFFSET ' +
               offset
-            const result = await tx.executeAsync(sql, sqlArgs)
+            const result = await sqliteService.query(sql, sqlArgs)
             finishedCount++
             if (result.rows) {
               for (let index = 0; index < result.rows.length; index++) {
@@ -495,7 +406,7 @@ async function SQLitePouchCore(options: DbOptions, callback: (err: any) => void)
           }
         } else {
           const sql =
-            select(
+            buildSelectQuery(
               SELECT_DOCS,
               [DOC_STORE, BY_SEQ_STORE],
               DOC_STORE_AND_BY_SEQ_JOINER,
@@ -506,7 +417,7 @@ async function SQLitePouchCore(options: DbOptions, callback: (err: any) => void)
             limit +
             ' OFFSET ' +
             offset
-          const result = await tx.executeAsync(sql, sqlArgs)
+          const result = await sqliteService.query(sql, sqlArgs)
           const rows: any[] = []
           if (result.rows) {
             for (let index = 0; index < result.rows.length; index++) {
@@ -527,7 +438,7 @@ async function SQLitePouchCore(options: DbOptions, callback: (err: any) => void)
         }
         callback(null, returnVal)
       } catch (e: any) {
-        handleSQLiteError(e, callback)
+        handleDatabaseError(e, callback)
       }
     })
   }
@@ -581,12 +492,14 @@ async function SQLitePouchCore(options: DbOptions, callback: (err: any) => void)
       const sqlArgs = [opts.since]
 
       if (opts.doc_ids) {
-        criteria.push(DOC_STORE + '.id IN ' + qMarks(opts.doc_ids.length))
+        criteria.push(
+          DOC_STORE + '.id IN ' + generateQuestionMarks(opts.doc_ids.length)
+        )
         sqlArgs.push(...opts.doc_ids)
       }
 
       const orderBy = 'maxSeq ' + (descending ? 'DESC' : 'ASC')
-      let sql = select(selectStmt, from, joiner, criteria, orderBy)
+      let sql = buildSelectQuery(selectStmt, from, joiner, criteria, orderBy)
       const filter = filterChange(opts)
 
       if (!opts.view && !opts.filter) {
@@ -596,7 +509,7 @@ async function SQLitePouchCore(options: DbOptions, callback: (err: any) => void)
       let lastSeq = opts.since || 0
       readTransaction(async (tx: Transaction) => {
         try {
-          const result = await tx.executeAsync(sql, sqlArgs)
+          const result = await sqliteService.query(sql, sqlArgs)
 
           if (result.rows) {
             for (let i = 0, l = result.rows.length; i < l; i++) {
@@ -604,7 +517,7 @@ async function SQLitePouchCore(options: DbOptions, callback: (err: any) => void)
               const metadata = safeJsonParse(item.metadata)
               lastSeq = item.maxSeq
 
-              const doc = unstringifyDoc(
+              const doc = parseDocument(
                 item.winningDoc,
                 metadata.id,
                 item.winningRev
@@ -643,7 +556,7 @@ async function SQLitePouchCore(options: DbOptions, callback: (err: any) => void)
             })
           }
         } catch (e: any) {
-          handleSQLiteError(e, opts.complete)
+          handleDatabaseError(e, opts.complete)
         }
       })
     }
@@ -652,12 +565,12 @@ async function SQLitePouchCore(options: DbOptions, callback: (err: any) => void)
   }
 
   api._close = (callback: (err?: any) => void) => {
-    closeDB(api._name)
+    sqliteService.closeAllConnections()
     callback()
   }
 
   api._getAttachment = (
-    docId: string,
+    documentId: string,
     attachId: string,
     attachment: any,
     opts: any,
@@ -669,7 +582,7 @@ async function SQLitePouchCore(options: DbOptions, callback: (err: any) => void)
     const type = attachment.content_type
     const sql =
       'SELECT escaped, body AS body FROM ' + ATTACH_STORE + ' WHERE digest=?'
-    tx.executeAsync(sql, [digest]).then((result) => {
+    sqliteService.query(sql, [digest]).then((result) => {
       const item = result.rows?.item(0)
       const data = item.body
       if (opts.binary) {
@@ -682,12 +595,12 @@ async function SQLitePouchCore(options: DbOptions, callback: (err: any) => void)
   }
 
   api._getRevisionTree = (
-    docId: string,
+    documentId: string,
     callback: (err: any, rev_tree?: any) => void
   ) => {
     readTransaction(async (tx: Transaction) => {
       const sql = 'SELECT json AS metadata FROM ' + DOC_STORE + ' WHERE id = ?'
-      const result = await tx.executeAsync(sql, [docId])
+      const result = await sqliteService.query(sql, [documentId])
       if (!result.rows?.length) {
         callback(createError(MISSING_DOC))
       } else {
@@ -698,7 +611,7 @@ async function SQLitePouchCore(options: DbOptions, callback: (err: any) => void)
   }
 
   api._doCompaction = (
-    docId: string,
+    documentId: string,
     revs: string[],
     callback: (err?: any) => void
   ) => {
@@ -708,7 +621,7 @@ async function SQLitePouchCore(options: DbOptions, callback: (err: any) => void)
     transaction(async (tx: Transaction) => {
       try {
         let sql = 'SELECT json AS metadata FROM ' + DOC_STORE + ' WHERE id = ?'
-        const result = await tx.executeAsync(sql, [docId])
+        const result = await sqliteService.query(sql, [documentId])
         const metadata = safeJsonParse(result.rows?.item(0).metadata)
         traverseRevTree(
           metadata.rev_tree,
@@ -726,11 +639,14 @@ async function SQLitePouchCore(options: DbOptions, callback: (err: any) => void)
           }
         )
         sql = 'UPDATE ' + DOC_STORE + ' SET json = ? WHERE id = ?'
-        await tx.executeAsync(sql, [safeJsonStringify(metadata), docId])
+        await sqliteService.query(sql, [
+          safeJsonStringify(metadata),
+          documentId,
+        ])
 
-        compactRevs(revs, docId, tx)
+        cleanupOldRevisions(revs, documentId, tx)
       } catch (e: any) {
-        handleSQLiteError(e, callback)
+        handleDatabaseError(e, callback)
       }
       callback()
     })
@@ -740,16 +656,16 @@ async function SQLitePouchCore(options: DbOptions, callback: (err: any) => void)
     readTransaction(async (tx: Transaction) => {
       try {
         const sql = 'SELECT json, rev FROM ' + LOCAL_STORE + ' WHERE id=?'
-        const res = await tx.executeAsync(sql, [id])
+        const res = await sqliteService.query(sql, [id])
         if (res.rows?.length) {
           const item = res.rows.item(0)
-          const doc = unstringifyDoc(item.json, id, item.rev)
+          const doc = parseDocument(item.json, id, item.rev)
           callback(null, doc)
         } else {
           callback(createError(MISSING_DOC))
         }
       } catch (e: any) {
-        handleSQLiteError(e, callback)
+        handleDatabaseError(e, callback)
       }
     })
   }
@@ -772,7 +688,7 @@ async function SQLitePouchCore(options: DbOptions, callback: (err: any) => void)
     } else {
       newRev = doc._rev = '0-' + (parseInt(oldRev.split('-')[1], 10) + 1)
     }
-    const json = stringifyDoc(doc)
+    const json = stringifyDocument(doc)
 
     let ret: any
     const putLocal = async (tx: Transaction) => {
@@ -787,7 +703,7 @@ async function SQLitePouchCore(options: DbOptions, callback: (err: any) => void)
           sql = 'INSERT INTO ' + LOCAL_STORE + ' (id, rev, json) VALUES (?,?,?)'
           values = [id, newRev, json]
         }
-        const res = await tx.executeAsync(sql, values)
+        const res = await sqliteService.query(sql, values)
         if (res.rowsAffected) {
           ret = { ok: true, id: id, rev: newRev }
           callback(null, ret)
@@ -795,7 +711,7 @@ async function SQLitePouchCore(options: DbOptions, callback: (err: any) => void)
           callback(createError(REV_CONFLICT))
         }
       } catch (e: any) {
-        handleSQLiteError(e, callback)
+        handleDatabaseError(e, callback)
       }
     }
 
@@ -821,14 +737,14 @@ async function SQLitePouchCore(options: DbOptions, callback: (err: any) => void)
       try {
         const sql = 'DELETE FROM ' + LOCAL_STORE + ' WHERE id=? AND rev=?'
         const params = [doc._id, doc._rev]
-        const res = await tx.executeAsync(sql, params)
+        const res = await sqliteService.query(sql, params)
         if (!res.rowsAffected) {
           return callback(createError(MISSING_DOC))
         }
         ret = { ok: true, id: doc._id, rev: '0-0' }
         callback(null, ret)
       } catch (e: any) {
-        handleSQLiteError(e, callback)
+        handleDatabaseError(e, callback)
       }
     }
 
@@ -852,11 +768,11 @@ async function SQLitePouchCore(options: DbOptions, callback: (err: any) => void)
           ATTACH_AND_SEQ_STORE,
         ]
         stores.forEach((store) => {
-          tx.execute('DROP TABLE IF EXISTS ' + store, [])
+          await sqliteService.execute('DROP TABLE IF EXISTS ' + store, [])
         })
         callback(null, { ok: true })
       } catch (e: any) {
-        handleSQLiteError(e, callback)
+        handleDatabaseError(e, callback)
       }
     })
   }
@@ -902,32 +818,37 @@ async function SQLitePouchCore(options: DbOptions, callback: (err: any) => void)
     })
   }
 
-  async function getMaxSeq(tx: Transaction): Promise<number> {
+  async function getEncoding() {
+    const res: any[] = await sqliteService.query("SELECT HEX('a') AS hex", [])
+    const hex = res?.[0]?.hex
+    return hex.length === 2 ? 'UTF-8' : 'UTF-16'
+  }
+
+  async function getMaxSequence(): Promise<number> {
     const sql = 'SELECT MAX(seq) AS seq FROM ' + BY_SEQ_STORE
-    const res = await tx.executeAsync(sql, [])
-    const updateSeq = res.rows?.item(0).seq || 0
+    const res: any[] = await sqliteService.query(sql, [])
+    const updateSeq = res?.[0]?.seq || 0
     return updateSeq
   }
 
-  async function countDocs(tx: Transaction): Promise<number> {
-    const sql = select(
+  async function getCountDocuments(): Promise<number> {
+    const sql = buildSelectQuery(
       'COUNT(' + DOC_STORE + ".id) AS 'num'",
       [DOC_STORE, BY_SEQ_STORE],
       DOC_STORE_AND_BY_SEQ_JOINER,
       BY_SEQ_STORE + '.deleted=0'
     )
-    const result = await tx.executeAsync(sql, [])
-    return result.rows?.item(0).num || 0
+    const result: any[] = await sqliteService.query(sql, [])
+    return result?.[0]?.num || 0
   }
 
   async function latest(
-    tx: Transaction,
     id: string,
     rev: string,
     callback: (latestRev: string) => void,
     finish: (err: any) => void
   ) {
-    const sql = select(
+    const sql = buildSelectQuery(
       SELECT_DOCS,
       [DOC_STORE, BY_SEQ_STORE],
       DOC_STORE_AND_BY_SEQ_JOINER,
@@ -935,12 +856,12 @@ async function SQLitePouchCore(options: DbOptions, callback: (err: any) => void)
     )
     const sqlArgs = [id]
 
-    const results = await tx.executeAsync(sql, sqlArgs)
-    if (!results.rows?.length) {
+    const results: any[] = await sqliteService.query(sql, sqlArgs)
+    if (!results?.length) {
       const err = createError(MISSING_DOC, 'missing')
       return finish(err)
     }
-    const item = results.rows.item(0)
+    const item = results[0]
     const metadata = safeJsonParse(item.metadata)
     callback(getLatest(rev, metadata))
   }

@@ -1,8 +1,8 @@
-import SQLitePouchCore from './coreService'
-import { DbOptions } from './SQLiteService'
+import SQLitePouchCore from './SqlitePouchCore'
+import { SqliteOptions } from './SQLiteService'
 
 function CapacitorSQLitePouch(
-  options: DbOptions,
+  options: SqliteOptions,
   callback: (err: any) => void
 ) {
   try {
