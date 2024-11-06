@@ -17,7 +17,6 @@ import {
 
 import { select, stringifyDoc, compactRevs, handleSQLiteError } from './utils'
 import type { Transaction } from '@op-engineering/op-sqlite'
-import { logger } from './debug'
 
 interface DocInfo {
   _id: string
@@ -67,7 +66,7 @@ async function sqliteBulkDocs(
   const fetchedDocs = new Map<string, any>()
 
   async function verifyAttachment(digest: string) {
-    logger.debug('verify attachment:', digest)
+    console.log('verify attachment:', digest)
     const sql =
       'SELECT count(*) as cnt FROM ' + ATTACH_STORE + ' WHERE digest=?'
     const result = await tx.executeAsync(sql, [digest])
@@ -79,7 +78,7 @@ async function sqliteBulkDocs(
       logger.error('unknown:', err)
       throw err
     } else {
-      logger.debug('ok')
+      console.log('ok')
       return true
     }
   }
@@ -91,7 +90,7 @@ async function sqliteBulkDocs(
         Object.keys(docInfo.data._attachments).forEach((filename) => {
           const att = docInfo.data._attachments[filename]
           if (att.stub) {
-            logger.debug('attachment digest', att.digest)
+            console.log('attachment digest', att.digest)
             digests.push(att.digest)
           }
         })
@@ -114,7 +113,7 @@ async function sqliteBulkDocs(
     _delta: number,
     resultsIdx: number
   ) {
-    logger.debug('writeDoc:', { ...docInfo, data: null })
+    console.log('writeDoc:', { ...docInfo, data: null })
 
     async function dataWritten(tx: Transaction, seq: number) {
       const id = docInfo.metadata.id
@@ -217,7 +216,7 @@ async function sqliteBulkDocs(
       const fetchSql = select('seq', BY_SEQ_STORE, null, 'doc_id=? AND rev=?')
       const res = await tx.executeAsync(fetchSql, [id, rev])
       const seq = res.rows?.item(0).seq
-      logger.debug(
+      console.log(
         `Got a constraint error, updating instead: seq=${seq}, id=${id}, rev=${rev}`
       )
       const sql =
@@ -292,7 +291,7 @@ async function sqliteBulkDocs(
   }
 
   async function saveAttachment(digest: string, data: any) {
-    logger.debug('saveAttachment:', digest)
+    console.log('saveAttachment:', digest)
     let sql = 'SELECT digest FROM ' + ATTACH_STORE + ' WHERE digest=?'
     const result = await tx.executeAsync(sql, [digest])
     if (result.rows?.length) return

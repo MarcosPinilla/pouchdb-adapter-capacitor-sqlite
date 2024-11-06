@@ -1,7 +1,6 @@
 import { createError, WSQ_ERROR } from 'pouchdb-errors'
 import { guardedConsole } from 'pouchdb-utils'
 import { BY_SEQ_STORE, ATTACH_STORE, ATTACH_AND_SEQ_STORE } from './constants'
-import type { Transaction } from '@op-engineering/op-sqlite'
 
 function stringifyDoc(doc: Record<string, any>): string {
   // don't bother storing the id/rev. it uses lots of space,

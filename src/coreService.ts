@@ -39,10 +39,7 @@ import {
   handleSQLiteError,
 } from './utils'
 
-import openDB, { closeDB, type OpenDatabaseOptions } from './openDatabase'
-import type { DB, Transaction } from '@op-engineering/op-sqlite'
-import type { TransactionQueue } from './transactionQueue'
-import { logger } from './debug'
+import { DbOptions, SQLiteService } from './SQLiteService';
 
 // these indexes cover the ground for most allDocs queries
 const BY_SEQ_STORE_DELETED_INDEX_SQL =
@@ -83,28 +80,32 @@ const SELECT_DOCS =
 
 const sqliteChanges = new Changes()
 
-function SqlPouch(opts: OpenDatabaseOptions, cb: (err: any) => void) {
+async function SQLitePouchCore(options: DbOptions, callback: (err: any) => void) {
   // @ts-ignore
   let api = this as any
-  let db: DB
+  // let db: DB
   // @ts-ignore
   let txnQueue: TransactionQueue
   let instanceId: string
   let encoding: string = 'UTF-8'
   api.auto_compaction = false
 
-  api._name = opts.name
-  logger.debug('Creating SqlPouch instance: %s', api._name)
+  api._name = options.dbName
+  console.log('Creating SqlPouch instance: %s', api._name)
+
+  const sqliteService = new SQLiteService(options.platform);
+  await sqliteService.initializePlugin();
+  await sqliteService.openDatabase(options);
 
   const sqlOpts = Object.assign({}, opts, { name: opts.name + '.sqlite' })
   const openDBResult = openDB(sqlOpts)
   if ('db' in openDBResult) {
     db = openDBResult.db
     txnQueue = openDBResult.transactionQueue
-    setup(cb)
-    logger.debug('Database was opened successfully.', db.getDbPath())
+    setup(callback)
+    console.log('Database was opened successfully.', db.getDbPath())
   } else {
-    handleSQLiteError(openDBResult.error, cb)
+    handleSQLiteError(openDBResult.error, callback)
   }
 
   async function transaction(fn: (tx: Transaction) => Promise<void>) {
@@ -245,7 +246,7 @@ function SqlPouch(opts: OpenDatabaseOptions, cb: (err: any) => void) {
     reqOpts: any,
     callback: (err: any, response?: any) => void
   ) => {
-    logger.debug('**********bulkDocs!!!!!!!!!!!!!!!!!!!')
+    console.log('**********bulkDocs!!!!!!!!!!!!!!!!!!!')
     try {
       const response = await sqliteBulkDocs(
         { revs_limit: undefined },
@@ -266,7 +267,7 @@ function SqlPouch(opts: OpenDatabaseOptions, cb: (err: any) => void) {
     opts: any,
     callback: (err: any, response?: any) => void
   ) => {
-    logger.debug('get:', id)
+    console.log('get:', id)
     let doc: any
     let metadata: any
     const tx: Transaction = opts.ctx
@@ -865,17 +866,17 @@ function SqlPouch(opts: OpenDatabaseOptions, cb: (err: any) => void) {
     opts: any,
     api: any,
     txn: any,
-    cb?: () => void
+    callback?: () => void
   ) {
     const attachments = Object.keys(doc._attachments || {})
     if (!attachments.length) {
-      return cb && cb()
+      return callback && callback()
     }
     let numDone = 0
 
     const checkDone = () => {
-      if (++numDone === attachments.length && cb) {
-        cb()
+      if (++numDone === attachments.length && callback) {
+        callback()
       }
     }
 
@@ -945,4 +946,4 @@ function SqlPouch(opts: OpenDatabaseOptions, cb: (err: any) => void) {
   }
 }
 
-export default SqlPouch
+export default SQLitePouchCore
