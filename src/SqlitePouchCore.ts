@@ -757,6 +757,9 @@ async function SQLitePouchCore(
 
   api._destroy = (opts: any, callback: (err: any, response?: any) => void) => {
     sqliteChanges.removeAllListeners(api._name)
+    sqliteService.executeTransaction(async () => {
+
+    })
     transaction(async (tx: Transaction) => {
       try {
         const stores = [
