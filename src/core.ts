@@ -94,7 +94,7 @@ function SqlPouch(opts: OpenDatabaseOptions, cb: (err: any) => void) {
   api.auto_compaction = false
 
   api._name = opts.name
-  logger.debug('Creating SqlPouch instance: %s', api._name)
+  console.log('Creating SqlPouch instance: %s', api._name)
 
   const sqlOpts = Object.assign({}, opts, { name: opts.name + '.sqlite' })
   const openDBResult = openDB(sqlOpts)
@@ -102,7 +102,7 @@ function SqlPouch(opts: OpenDatabaseOptions, cb: (err: any) => void) {
     db = openDBResult.db
     txnQueue = openDBResult.transactionQueue
     setup(cb)
-    logger.debug('Database was opened successfully.', db.getDbPath())
+    console.log('Database was opened successfully.', db.getDbPath())
   } else {
     handleSQLiteError(openDBResult.error, cb)
   }
@@ -245,7 +245,7 @@ function SqlPouch(opts: OpenDatabaseOptions, cb: (err: any) => void) {
     reqOpts: any,
     callback: (err: any, response?: any) => void
   ) => {
-    logger.debug('**********bulkDocs!!!!!!!!!!!!!!!!!!!')
+    console.log('**********bulkDocs!!!!!!!!!!!!!!!!!!!')
     try {
       const response = await sqliteBulkDocs(
         { revs_limit: undefined },
@@ -266,7 +266,7 @@ function SqlPouch(opts: OpenDatabaseOptions, cb: (err: any) => void) {
     opts: any,
     callback: (err: any, response?: any) => void
   ) => {
-    logger.debug('get:', id)
+    console.log('get:', id)
     let doc: any
     let metadata: any
     const tx: Transaction = opts.ctx

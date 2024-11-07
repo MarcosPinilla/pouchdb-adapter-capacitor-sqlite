@@ -1,5 +1,4 @@
 import type { DB, Transaction } from '@op-engineering/op-sqlite'
-import { logger } from './debug'
 
 export interface PendingTransaction {
   readonly: boolean
@@ -33,7 +32,7 @@ export class TransactionQueue {
       setImmediate(async () => {
         try {
           if (tx.readonly) {
-            logger.debug('---> transaction start!')
+            console.log('---> transaction start!')
             await tx.start({
               commit: () => ({ rowsAffected: 0 }),
               execute: this.db.execute.bind(this.db),
@@ -41,11 +40,11 @@ export class TransactionQueue {
               rollback: () => ({ rowsAffected: 0 }),
             })
           } else {
-            logger.debug('---> write transaction start!')
+            console.log('---> write transaction start!')
             await this.db.transaction(tx.start)
           }
         } finally {
-          logger.debug(
+          console.log(
             '<--- transaction finished! queue.length:',
             this.queue.length
           )
