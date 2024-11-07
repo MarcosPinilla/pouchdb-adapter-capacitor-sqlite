@@ -1,25 +1,24 @@
-import SQLitePouchCore from './SqlitePouchCore'
-import { SqliteOptions } from './SQLiteService'
+import SqlPouchCore from './core'
+import type { OpenDatabaseOptions } from './openDatabase'
 
-function CapacitorSQLitePouch(
-  options: SqliteOptions,
+function ReactNativeSQLitePouch(
+  opts: OpenDatabaseOptions,
   callback: (err: any) => void
 ) {
   try {
     // @ts-ignore
-    SQLitePouchCore.call(this, options, callback)
+    SqlPouchCore.call(this, opts, callback)
   } catch (err) {
     callback(err)
   }
 }
 
 // Set static properties
-CapacitorSQLitePouch.valid = function () {
+ReactNativeSQLitePouch.valid = function () {
   return true
 }
+ReactNativeSQLitePouch.use_prefix = false
 
-CapacitorSQLitePouch.use_prefix = false
-
-export default function CapacitorSqlitePlugin(PouchDB: any) {
-  PouchDB.adapter('capacitor-sqlite', CapacitorSQLitePouch, true)
+export default function reactNativeSqlitePlugin(PouchDB: any) {
+  PouchDB.adapter('react-native-sqlite', ReactNativeSQLitePouch, true)
 }
