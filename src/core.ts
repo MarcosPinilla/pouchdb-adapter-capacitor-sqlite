@@ -42,7 +42,6 @@ import {
 import openDB, { closeDB, type OpenDatabaseOptions } from './openDatabase'
 import type { DB, Transaction } from '@op-engineering/op-sqlite'
 import type { TransactionQueue } from './transactionQueue'
-import { logger } from './debug'
 
 // these indexes cover the ground for most allDocs queries
 const BY_SEQ_STORE_DELETED_INDEX_SQL =
