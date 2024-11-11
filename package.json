@@ -1,7 +1,7 @@
 {
-  "name": "pouchdb-adapter-react-native-sqlite",
-  "version": "4.0.5",
-  "description": "PouchDB adapter for React Native SQLite",
+  "name": "pouchdb-adapter-adapter-sqlite",
+  "version": "1.0.0",
+  "description": "PouchDB adapter for Capacitor SQLite",
   "main": "lib/commonjs/index",
   "module": "lib/module/index",
   "types": "lib/typescript/src/index.d.ts",
@@ -26,7 +26,7 @@
     "!**/.*"
   ],
   "scripts": {
-    "example": "yarn workspace pouchdb-adapter-react-native-sqlite-example",
+    "example": "yarn workspace pouchdb-adapter-capacitor-sqlite-example",
     "test": "jest",
     "typecheck": "tsc --noEmit",
     "lint": "eslint \"**/*.{js,ts,tsx}\"",
@@ -35,20 +35,21 @@
     "release": "release-it"
   },
   "keywords": [
-    "react-native",
+    "ionic",
+    "capacitor",
     "ios",
     "android"
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/craftzdog/pouchdb-adapter-react-native-sqlite.git"
+    "url": "git+https://github.com/craftzdog/pouchdb-adapter-capacitor-sqlite.git"
   },
   "author": "Takuya Matsuyama <hi@craftz.dog> (https://github.com/craftzdog)",
   "license": "MIT",
   "bugs": {
-    "url": "https://github.com/craftzdog/pouchdb-adapter-react-native-sqlite/issues"
+    "url": "https://github.com/craftzdog/pouchdb-adapter-capacitor-sqlite/issues"
   },
-  "homepage": "https://github.com/craftzdog/pouchdb-adapter-react-native-sqlite#readme",
+  "homepage": "https://github.com/craftzdog/pouchdb-adapter-capacitor-sqlite#readme",
   "publishConfig": {
     "registry": "https://registry.npmjs.org/"
   },
@@ -68,14 +69,8 @@
     "eslint-config-prettier": "^9.0.0",
     "jest": "^29.7.0",
     "prettier": "^3.0.3",
-    "react": "18.2.0",
-    "react-native": "0.74.2",
-    "react-native-builder-bob": "^0.23.2",
     "release-it": "^15.0.0",
     "typescript": "^5.2.2"
-  },
-  "resolutions": {
-    "@types/react": "^18.2.44"
   },
   "dependencies": {
     "@capacitor-community/sqlite": "^6.0.2",
@@ -86,21 +81,10 @@
     "pouchdb-merge": "^8.0.1",
     "pouchdb-utils": "^8.0.1"
   },
-  "peerDependencies": {
-    "react": "*",
-    "react-native": "*"
-  },
   "workspaces": [
     "example"
   ],
   "packageManager": "yarn@3.6.1",
-  "jest": {
-    "preset": "react-native",
-    "modulePathIgnorePatterns": [
-      "<rootDir>/example/node_modules",
-      "<rootDir>/lib/"
-    ]
-  },
   "commitlint": {
     "extends": [
       "@commitlint/config-conventional"
@@ -134,19 +118,5 @@
     "trailingComma": "es5",
     "useTabs": false,
     "semi": false
-  },
-  "react-native-builder-bob": {
-    "source": "src",
-    "output": "lib",
-    "targets": [
-      "commonjs",
-      "module",
-      [
-        "typescript",
-        {
-          "project": "tsconfig.build.json"
-        }
-      ]
-    ]
   }
 }
