@@ -3,7 +3,6 @@
   "version": "1.0.0",
   "description": "PouchDB adapter for Capacitor SQLite",
   "main": "src/index",
-  "types": "definitions/pouchdb.d.ts",
   "source": "src/index",
   "files": [
     "src",
