@@ -2583,6 +2583,16 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@op-engineering/op-sqlite@npm:^10.0.0-tokenizers-beta3":
+  version: 10.0.0
+  resolution: "@op-engineering/op-sqlite@npm:10.0.0"
+  peerDependencies:
+    react: "*"
+    react-native: ">0.73.0"
+  checksum: 0a0c517e4274280d85fab98867035ee826ad94e19c452b499e5ed50e76019effc2a30efd4f0b76ed7bca2ea51fd58d821c39623695ed79ac91b5dc456741322b
+  languageName: node
+  linkType: hard
+
 "@pkgjs/parseargs@npm:^0.11.0":
   version: 0.11.0
   resolution: "@pkgjs/parseargs@npm:0.11.0"
@@ -10179,6 +10189,7 @@ __metadata:
     "@capacitor-community/sqlite": ^6.0.2
     "@commitlint/config-conventional": ^17.0.2
     "@evilmartians/lefthook": ^1.5.0
+    "@op-engineering/op-sqlite": ^10.0.0-tokenizers-beta3
     "@release-it/conventional-changelog": ^5.0.0
     "@types/jest": ^29.5.5
     "@types/pouchdb-core": ^7.0.14

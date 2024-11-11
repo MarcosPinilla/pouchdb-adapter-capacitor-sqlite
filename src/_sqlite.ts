@@ -11,7 +11,6 @@ import { defineCustomElements as jeepSqlite } from 'jeep-sqlite/loader'
 export type SqliteOptions = {
   databaseName: string
   databaseVersion: number
-  readonly: boolean
   platform: string
 }
 
@@ -34,17 +33,16 @@ export class SqliteService {
   isService: boolean = false
 
   constructor(sqliteOptions: SqliteOptions) {
-    const { platform, databaseName, databaseVersion, readonly } = sqliteOptions
+    const { platform, databaseName, databaseVersion } = sqliteOptions
     this.platform = platform
     this.databaseName = databaseName
     this.databaseVersion = databaseVersion
-    this.readonly = readonly
   }
 
   /**
    * Sqlite Initialization
    */
-  async initializeSqlite() {
+  public async initializeSqlite() {
     try {
       await this.initializePlugin()
 
@@ -60,7 +58,7 @@ export class SqliteService {
   /**
    * Plugin Initialization
    */
-  async initializePlugin(): Promise<boolean> {
+  private async initializePlugin(): Promise<boolean> {
     if (this.platform === 'ios' || this.platform === 'android') {
       this.native = true
     }
@@ -73,14 +71,14 @@ export class SqliteService {
   /**
    * Get Platform
    */
-  getPlatform() {
+  private getPlatform() {
     return this.platform
   }
 
   /**
    * Initialize the Web store
    */
-  async initWebStore(): Promise<void> {
+  private async initWebStore(): Promise<void> {
     if (this.sqliteConnection === null) {
       throw Error(`no plugin connection`)
     }
@@ -104,7 +102,7 @@ export class SqliteService {
    * Open Database Connection
    * - Create Connection or Use Existed Connection.
    */
-  async openDbConnection(
+  private async openDbConnection(
     databaseName: string,
     encrypted: boolean,
     encryptedMode: string = 'no-encryption',
@@ -143,7 +141,7 @@ export class SqliteService {
    * Open Database Connection
    * - Create Connection or Use Existed Connection.
    */
-  async getSqliteDbConnection(
+  private async getSqliteDbConnection(
     databaseName: string,
     loadToVersion: number
   ): Promise<SQLiteDBConnection> {
@@ -162,7 +160,7 @@ export class SqliteService {
   /**
    * Save To Web Store
    */
-  async saveToWebStore(databaseName: string): Promise<void> {
+  private async saveToWebStore(databaseName: string): Promise<void> {
     if (this.sqliteConnection === null) {
       throw Error(`no plugin connection`)
     }
@@ -172,7 +170,7 @@ export class SqliteService {
   /**
    * Execute Select Query
    */
-  async executeSelectQuery(
+  private async executeSelectQuery(
     statement: string,
     values: any[] = [],
     db: SQLiteDBConnection
@@ -187,7 +185,7 @@ export class SqliteService {
   /**
    * Execute NonSelect Query
    */
-  async executeNonSelectQuery(
+  private async executeNonSelectQuery(
     statement: string,
     values: any[] = [],
     db: SQLiteDBConnection,
@@ -203,7 +201,7 @@ export class SqliteService {
   /**
    * ExecuteTransaction
    */
-  async executeSqliteTransaction(
+  private async executeSqliteTransaction(
     transaction: (db: SQLiteDBConnection) => Promise<void>,
     db: SQLiteDBConnection,
     databaseName: string
@@ -224,7 +222,7 @@ export class SqliteService {
   /**
    * Execute Simple Transaction
    */
-  async executeSimpleSqliteTransaction(
+  private async executeSimpleSqliteTransaction(
     queries: { statement: string; values?: any[] }[],
     db: SQLiteDBConnection,
     databaseName: string
@@ -242,7 +240,7 @@ export class SqliteService {
   /**
    * close all connections
    */
-  async closeAllConnections() {
+  public async closeAllConnections() {
     if (this.sqliteConnection === null) {
       throw Error(`no plugin connection`)
     }
@@ -254,14 +252,14 @@ export class SqliteService {
   }
 
   // Database Service
-  public async getDbConnection() {
+  private async getDbConnection() {
     return await this.getSqliteDbConnection(
       this.databaseName,
       this.databaseVersion
     )
   }
 
-  async query<T>(statement: string, values: any[] = []): Promise<T[]> {
+  public async query<T>(statement: string, values: any[] = []): Promise<T[]> {
     console.log(`buildSelectQuery query : ${statement} / ${values}`)
     this.dbConnection = await this.getDbConnection()
     const response = await this.executeSelectQuery(
@@ -290,7 +288,7 @@ export class SqliteService {
     return result
   }
 
-  async executeTransaction(
+  public async executeTransaction(
     transaction: (dbConnection?: SQLiteDBConnection) => Promise<void>
   ): Promise<void> {
     this.dbConnection = await this.getDbConnection()
@@ -301,7 +299,7 @@ export class SqliteService {
     )
   }
 
-  async execute(
+  public async execute(
     statement: string,
     values: any[] = []
   ): Promise<QueryResult | undefined> {

@@ -1,0 +1,115 @@
+import {
+  DOC_STORE,
+  BY_SEQ_STORE,
+  ATTACH_STORE,
+  LOCAL_STORE,
+  META_STORE,
+  ATTACH_AND_SEQ_STORE,
+} from './constants'
+
+// DOC_STORE와 BY_SEQ_STORE를 조인할 때 사용되는 조건문
+export const DOC_STORE_AND_BY_SEQ_JOINER = `${BY_SEQ_STORE}.seq = ${DOC_STORE}.winningseq`
+
+// 문서 선택을 위한 SQL 구문
+export const SELECT_DOCS = `
+    ${BY_SEQ_STORE}.seq AS seq,
+    ${BY_SEQ_STORE}.deleted AS deleted,
+    ${BY_SEQ_STORE}.json AS data,
+    ${BY_SEQ_STORE}.rev AS rev,
+    ${DOC_STORE}.json AS metadata
+  `
+
+// 테이블 생성 쿼리 - 필요한 모든 테이블을 생성합니다.
+const CREATE_META_TABLE = `
+    CREATE TABLE IF NOT EXISTS ${META_STORE} (dbid, db_version INTEGER)
+  `
+
+const CREATE_ATTACH_TABLE = `
+    CREATE TABLE IF NOT EXISTS ${ATTACH_STORE} (digest UNIQUE, escaped TINYINT(1), body BLOB)
+  `
+
+const CREATE_ATTACH_AND_SEQ_TABLE = `
+    CREATE TABLE IF NOT EXISTS ${ATTACH_AND_SEQ_STORE} (digest, seq INTEGER)
+  `
+
+const CREATE_DOC_TABLE = `
+    CREATE TABLE IF NOT EXISTS ${DOC_STORE} (id unique, json, winningseq, max_seq INTEGER UNIQUE)
+  `
+
+const CREATE_SEQ_TABLE = `
+    CREATE TABLE IF NOT EXISTS ${BY_SEQ_STORE} (
+      seq INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+      json,
+      deleted TINYINT(1),
+      doc_id,
+      rev
+    )
+  `
+
+const CREATE_LOCAL_TABLE = `
+  CREATE TABLE IF NOT EXISTS ${LOCAL_STORE} (id UNIQUE, rev, json)
+`
+
+// 인덱스 생성 쿼리 - 대부분의 allDocs 쿼리를 지원하는 인덱스입니다.
+const BY_SEQ_STORE_DELETED_INDEX_SQL = `
+CREATE INDEX IF NOT EXISTS 'by-seq-deleted-idx' ON ${BY_SEQ_STORE} (seq, deleted)
+`
+
+const BY_SEQ_STORE_DOC_ID_REV_INDEX_SQL = `
+CREATE UNIQUE INDEX IF NOT EXISTS 'by-seq-doc-id-rev' ON ${BY_SEQ_STORE} (doc_id, rev)
+`
+
+const DOC_STORE_WINNINGSEQ_INDEX_SQL = `
+CREATE INDEX IF NOT EXISTS 'doc-winningseq-idx' ON ${DOC_STORE} (winningseq)
+`
+
+const ATTACH_AND_SEQ_STORE_SEQ_INDEX_SQL = `
+CREATE INDEX IF NOT EXISTS 'attach-seq-seq-idx' ON ${ATTACH_AND_SEQ_STORE} (seq)
+`
+
+const ATTACH_AND_SEQ_STORE_ATTACH_INDEX_SQL = `
+CREATE UNIQUE INDEX IF NOT EXISTS 'attach-seq-digest-idx' ON ${ATTACH_AND_SEQ_STORE} (digest, seq)
+`
+
+// 테이블 삭제 쿼리 - 모든 테이블을 삭제합니다.
+const DROP_DOC_TABLE = `DROP TABLE IF EXISTS ${DOC_STORE}`
+
+const DROP_SEQ_TABLE = `DROP TABLE IF EXISTS ${BY_SEQ_STORE}`
+
+const DROP_ATTACH_TABLE = `DROP TABLE IF EXISTS ${ATTACH_STORE}`
+
+const DROP_META_TABLE = `DROP TABLE IF EXISTS ${META_STORE}`
+
+const DROP_LOCAL_TABLE = `DROP TABLE IF EXISTS ${LOCAL_STORE}`
+
+const DROP_ATTACH_AND_SEQ_TABLE = `DROP TABLE IF EXISTS ${ATTACH_AND_SEQ_STORE}`
+
+export const SQL = {
+  GET_HEX: "SELECT HEX('a') AS hex",
+  GET_VERSION: 'SELECT sql FROM sqlite_master WHERE tbl_name = ?',
+  GET_DB_VERSION: 'SELECT db_version FROM ?',
+  GET_DBID: 'SELECT dbid FROM ?',
+  INSERT_INIT_SEQ: 'INSERT INTO ? (db_version, dbid) VALUES (?, ?)',
+  ALTER_TABLE_VERSION: 'ALTER TABLE ? ADD COLUMN db_version INTEGER',
+  CREATE_TABLES: [
+    CREATE_ATTACH_TABLE,
+    CREATE_LOCAL_TABLE,
+    CREATE_ATTACH_AND_SEQ_TABLE,
+    ATTACH_AND_SEQ_STORE_SEQ_INDEX_SQL,
+    ATTACH_AND_SEQ_STORE_ATTACH_INDEX_SQL,
+    CREATE_DOC_TABLE,
+    DOC_STORE_WINNINGSEQ_INDEX_SQL,
+    CREATE_SEQ_TABLE,
+    BY_SEQ_STORE_DELETED_INDEX_SQL,
+    BY_SEQ_STORE_DOC_ID_REV_INDEX_SQL,
+    CREATE_META_TABLE,
+  ],
+  DROP_TABLES: [
+    DROP_DOC_TABLE,
+    DROP_SEQ_TABLE,
+    DROP_ATTACH_TABLE,
+    DROP_META_TABLE,
+    DROP_LOCAL_TABLE,
+    DROP_ATTACH_AND_SEQ_TABLE,
+  ],
+}

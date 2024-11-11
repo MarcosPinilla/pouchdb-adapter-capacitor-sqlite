@@ -1,15 +1,10 @@
 import {
   clone,
-  pick,
   filterChange,
   changesHandler as Changes,
   uuid,
 } from 'pouchdb-utils'
-import {
-  collectConflicts,
-  traverseRevTree,
-  latest as getLatest,
-} from 'pouchdb-merge'
+import { collectConflicts, traverseRevTree } from 'pouchdb-merge'
 import { safeJsonParse, safeJsonStringify } from 'pouchdb-json'
 import {
   binaryStringToBlobOrBuffer as binStringToBlob,
@@ -21,237 +16,89 @@ import sqliteBulkDocs from './bulkDocs'
 import { MISSING_DOC, REV_CONFLICT, createError } from 'pouchdb-errors'
 
 import {
-  ADAPTER_VERSION,
   DOC_STORE,
   BY_SEQ_STORE,
   ATTACH_STORE,
   LOCAL_STORE,
   META_STORE,
-  ATTACH_AND_SEQ_STORE,
 } from './constants'
 
 import {
-  qMarks,
-  stringifyDoc,
-  unstringifyDoc,
-  select,
-  compactRevs,
+  generateQuestionMarks,
+  serializeDocument,
+  deserializeDocument,
+  buildSelectQuery,
+  removeOldRevisions,
   handleSQLiteError,
+  fetchLatestRevision,
+  fetchMaxSequence,
+  countTotalDocuments,
+  fetchAttachmentsIfNeeded,
+  getEncoding,
 } from './utils'
-
-import openDB, { closeDB, type OpenDatabaseOptions } from './openDatabase'
-import type { DB, Transaction } from '@op-engineering/op-sqlite'
-import type { TransactionQueue } from './transactionQueue'
-
-// these indexes cover the ground for most allDocs queries
-const BY_SEQ_STORE_DELETED_INDEX_SQL =
-  "CREATE INDEX IF NOT EXISTS 'by-seq-deleted-idx' ON " +
-  BY_SEQ_STORE +
-  ' (seq, deleted)'
-const BY_SEQ_STORE_DOC_ID_REV_INDEX_SQL =
-  "CREATE UNIQUE INDEX IF NOT EXISTS 'by-seq-doc-id-rev' ON " +
-  BY_SEQ_STORE +
-  ' (doc_id, rev)'
-const DOC_STORE_WINNINGSEQ_INDEX_SQL =
-  "CREATE INDEX IF NOT EXISTS 'doc-winningseq-idx' ON " +
-  DOC_STORE +
-  ' (winningseq)'
-const ATTACH_AND_SEQ_STORE_SEQ_INDEX_SQL =
-  "CREATE INDEX IF NOT EXISTS 'attach-seq-seq-idx' ON " +
-  ATTACH_AND_SEQ_STORE +
-  ' (seq)'
-const ATTACH_AND_SEQ_STORE_ATTACH_INDEX_SQL =
-  "CREATE UNIQUE INDEX IF NOT EXISTS 'attach-seq-digest-idx' ON " +
-  ATTACH_AND_SEQ_STORE +
-  ' (digest, seq)'
-
-const DOC_STORE_AND_BY_SEQ_JOINER =
-  BY_SEQ_STORE + '.seq = ' + DOC_STORE + '.winningseq'
-
-const SELECT_DOCS =
-  BY_SEQ_STORE +
-  '.seq AS seq, ' +
-  BY_SEQ_STORE +
-  '.deleted AS deleted, ' +
-  BY_SEQ_STORE +
-  '.json AS data, ' +
-  BY_SEQ_STORE +
-  '.rev AS rev, ' +
-  DOC_STORE +
-  '.json AS metadata'
+import { PluginOptions } from './_types'
+import { DOC_STORE_AND_BY_SEQ_JOINER, SELECT_DOCS, SQL } from './_queries'
+import { initializeDatabase } from './_migrations'
+import { SqliteService } from './_sqlite'
 
 const sqliteChanges = new Changes()
 
-function SqlPouch(opts: OpenDatabaseOptions, cb: (err: any) => void) {
+function SqlPouch(options: PluginOptions, cb: (err: any) => void) {
   // @ts-ignore
   let api = this as any
-  let db: DB
-  // @ts-ignore
-  let txnQueue: TransactionQueue
-  let instanceId: string
-  let encoding: string = 'UTF-8'
+  let db: SqliteService = new SqliteService(options)
+
+  // 초기화 함수
+  async function init() {
+    await db.initializeSqlite()
+    await initializeDatabase(db, cb)
+  }
+
+  init()
+
   api.auto_compaction = false
 
-  api._name = opts.name
-  console.log('Creating SqlPouch instance: %s', api._name)
-
-  const sqlOpts = Object.assign({}, opts, { name: opts.name + '.sqlite' })
-  const openDBResult = openDB(sqlOpts)
-  if ('db' in openDBResult) {
-    db = openDBResult.db
-    txnQueue = openDBResult.transactionQueue
-    setup(cb)
-    console.log('Database was opened successfully.', db.getDbPath())
-  } else {
-    handleSQLiteError(openDBResult.error, cb)
-  }
-
-  async function transaction(fn: (tx: Transaction) => Promise<void>) {
-    return txnQueue.push(fn)
-  }
-
-  async function readTransaction(fn: (tx: Transaction) => Promise<void>) {
-    return txnQueue.pushReadOnly(fn)
-  }
-
-  async function setup(callback: (err: any) => void) {
-    await db.transaction(async (tx) => {
-      checkEncoding(tx)
-      fetchVersion(tx)
-    })
-    callback(null)
-  }
-
-  function checkEncoding(tx: Transaction) {
-    const res = tx.execute("SELECT HEX('a') AS hex")
-    const hex = res.rows?.item(0).hex
-    encoding = hex.length === 2 ? 'UTF-8' : 'UTF-16'
-  }
-
-  function fetchVersion(tx: Transaction) {
-    const sql = 'SELECT sql FROM sqlite_master WHERE tbl_name = ' + META_STORE
-    const result = tx.execute(sql, [])
-    if (!result.rows?.length) {
-      onGetVersion(tx, 0)
-    } else if (!/db_version/.test(result.rows.item(0).sql)) {
-      tx.execute('ALTER TABLE ' + META_STORE + ' ADD COLUMN db_version INTEGER')
-      onGetVersion(tx, 1)
-    } else {
-      const resDBVer = tx.execute('SELECT db_version FROM ' + META_STORE)
-      const dbVersion = resDBVer.rows?.item(0).db_version
-      onGetVersion(tx, dbVersion)
-    }
-  }
-
-  function onGetVersion(tx: Transaction, dbVersion: number) {
-    if (dbVersion === 0) {
-      createInitialSchema(tx)
-    } else {
-      runMigrations(tx, dbVersion)
-    }
-  }
-
-  function createInitialSchema(tx: Transaction) {
-    const meta =
-      'CREATE TABLE IF NOT EXISTS ' + META_STORE + ' (dbid, db_version INTEGER)'
-    const attach =
-      'CREATE TABLE IF NOT EXISTS ' +
-      ATTACH_STORE +
-      ' (digest UNIQUE, escaped TINYINT(1), body BLOB)'
-    const attachAndRev =
-      'CREATE TABLE IF NOT EXISTS ' +
-      ATTACH_AND_SEQ_STORE +
-      ' (digest, seq INTEGER)'
-    const doc =
-      'CREATE TABLE IF NOT EXISTS ' +
-      DOC_STORE +
-      ' (id unique, json, winningseq, max_seq INTEGER UNIQUE)'
-    const seq =
-      'CREATE TABLE IF NOT EXISTS ' +
-      BY_SEQ_STORE +
-      ' (seq INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT, json, deleted TINYINT(1), doc_id, rev)'
-    const local =
-      'CREATE TABLE IF NOT EXISTS ' + LOCAL_STORE + ' (id UNIQUE, rev, json)'
-
-    tx.execute(attach)
-    tx.execute(local)
-    tx.execute(attachAndRev)
-    tx.execute(ATTACH_AND_SEQ_STORE_SEQ_INDEX_SQL)
-    tx.execute(ATTACH_AND_SEQ_STORE_ATTACH_INDEX_SQL)
-    tx.execute(doc)
-    tx.execute(DOC_STORE_WINNINGSEQ_INDEX_SQL)
-    tx.execute(seq)
-    tx.execute(BY_SEQ_STORE_DELETED_INDEX_SQL)
-    tx.execute(BY_SEQ_STORE_DOC_ID_REV_INDEX_SQL)
-    tx.execute(meta)
-    const initSeq =
-      'INSERT INTO ' + META_STORE + ' (db_version, dbid) VALUES (?,?)'
-    instanceId = uuid()
-    const initSeqArgs = [ADAPTER_VERSION, instanceId]
-    tx.execute(initSeq, initSeqArgs)
-    onGetInstanceId()
-  }
-
-  async function runMigrations(tx: Transaction, dbVersion: number) {
-    // const tasks = [setupDone]
-    //
-    // let i = dbVersion
-    // const nextMigration = (tx: Transaction) => {
-    //   tasks[i - 1](tx, nextMigration)
-    //   i++
-    // }
-    // nextMigration(tx)
-
-    const migrated = dbVersion < ADAPTER_VERSION
-    if (migrated) {
-      db.execute(
-        'UPDATE ' + META_STORE + ' SET db_version = ' + ADAPTER_VERSION
-      )
-    }
-    const result = db.execute('SELECT dbid FROM ' + META_STORE)
-    instanceId = result.rows?.item(0).dbid
-    onGetInstanceId()
-  }
-
-  function onGetInstanceId() {
-    // Do nothing
-  }
+  api._name = options.databaseName
 
   api._remote = false
 
+  // DB Instance Id 반환
   api._id = (callback: (err: any, id?: string) => void) => {
-    callback(null, instanceId)
+    ;(async () => {
+      const result = await db.query<any>(SQL.GET_DBID, [META_STORE])
+      const instanceId = result?.[0]?.dbid
+      callback(null, instanceId)
+    })()
   }
 
+  // DB 정보 반환
   api._info = (callback: (err: any, info?: any) => void) => {
-    readTransaction(async (tx: Transaction) => {
+    ;(async () => {
       try {
-        const seq = await getMaxSeq(tx)
-        const docCount = await countDocs(tx)
         callback(null, {
-          doc_count: docCount,
-          update_seq: seq,
-          sqlite_encoding: encoding,
+          doc_count: await countTotalDocuments(db),
+          update_seq: await fetchMaxSequence(db),
+          sqlite_encoding: (await getEncoding(db)) || 'UTF-8',
         })
-      } catch (e: any) {
-        handleSQLiteError(e, callback)
+      } catch (err: any) {
+        handleSQLiteError(err, callback)
       }
-    })
+    })()
   }
 
+  // Bulk Docs 처리
   api._bulkDocs = async (
     req: any,
     reqOpts: any,
     callback: (err: any, response?: any) => void
   ) => {
-    console.log('**********bulkDocs!!!!!!!!!!!!!!!!!!!')
     try {
       const response = await sqliteBulkDocs(
         { revs_limit: undefined },
         req,
         reqOpts,
         api,
-        transaction,
+        db,
         sqliteChanges
       )
       callback(null, response)
@@ -260,96 +107,84 @@ function SqlPouch(opts: OpenDatabaseOptions, cb: (err: any) => void) {
     }
   }
 
+  // Document 가져오기
   api._get = (
     id: string,
-    opts: any,
+    options: any,
     callback: (err: any, response?: any) => void
   ) => {
-    console.log('get:', id)
     let doc: any
     let metadata: any
-    const tx: Transaction = opts.ctx
-    if (!tx) {
-      readTransaction(async (txn) => {
-        return new Promise((resolve) => {
-          api._get(
-            id,
-            Object.assign({ ctx: txn }, opts),
-            (err: any, response: any) => {
-              callback(err, response)
-              resolve()
-            }
-          )
-        })
-      })
-      return
-    }
+    // info : options.ctx 무시 신규 트랜잭션
 
-    const finish = (err: any) => {
-      callback(err, { doc, metadata, ctx: tx })
-    }
+    const finish = (err: any) => callback(err, { doc, metadata, ctx: db })
 
+    const { rev, latest } = options
     let sql: string
-    let sqlArgs: any[]
+    let sqlArgs: any[] = []
 
-    if (!opts.rev) {
-      sql = select(
-        SELECT_DOCS,
-        [DOC_STORE, BY_SEQ_STORE],
-        DOC_STORE_AND_BY_SEQ_JOINER,
-        DOC_STORE + '.id=?'
-      )
-      sqlArgs = [id]
-    } else if (opts.latest) {
-      latest(
-        tx,
-        id,
-        opts.rev,
-        (latestRev: string) => {
-          opts.latest = false
-          opts.rev = latestRev
-          api._get(id, opts, callback)
-        },
-        finish
-      )
-      return
-    } else {
-      sql = select(
-        SELECT_DOCS,
-        [DOC_STORE, BY_SEQ_STORE],
-        DOC_STORE + '.id=' + BY_SEQ_STORE + '.doc_id',
-        [BY_SEQ_STORE + '.doc_id=?', BY_SEQ_STORE + '.rev=?']
-      )
-      sqlArgs = [id, opts.rev]
-    }
-
-    tx.executeAsync(sql, sqlArgs).then((results) => {
-      if (!results.rows?.length) {
-        const missingErr = createError(MISSING_DOC, 'missing')
-        return finish(missingErr)
+    ;(async () => {
+      if (!rev) {
+        sql = buildSelectQuery(
+          SELECT_DOCS,
+          [DOC_STORE, BY_SEQ_STORE],
+          DOC_STORE_AND_BY_SEQ_JOINER,
+          `${DOC_STORE}.id=?`
+        )
+        sqlArgs = [id]
+      } else if (latest) {
+        await fetchLatestRevision(
+          db,
+          id,
+          rev,
+          (latestRev: string) => {
+            options.latest = false
+            options.rev = latestRev
+            api._get(id, options, callback)
+          },
+          finish
+        )
+        return
+      } else {
+        sql = buildSelectQuery(
+          SELECT_DOCS,
+          [DOC_STORE, BY_SEQ_STORE],
+          `${DOC_STORE}.id=${BY_SEQ_STORE}.doc_id`,
+          [`${BY_SEQ_STORE}.doc_id=?`, `${BY_SEQ_STORE}.rev=?`]
+        )
+        sqlArgs = [id, rev]
       }
-      const item = results.rows.item(0)
+
+      const results = await db.query<any>(sql, sqlArgs)
+      if (!results.length) {
+        return finish(createError(MISSING_DOC, 'missing'))
+      }
+      const item = results?.[0]
       metadata = safeJsonParse(item.metadata)
-      if (item.deleted && !opts.rev) {
-        const deletedErr = createError(MISSING_DOC, 'deleted')
-        return finish(deletedErr)
+
+      if (item.deleted && !rev) {
+        return finish(createError(MISSING_DOC, 'deleted'))
       }
-      doc = unstringifyDoc(item.data, metadata.id, item.rev)
+      doc = deserializeDocument(item.data, metadata.id, item.rev)
       finish(null)
-    })
+    })()
   }
 
-  api._allDocs = (opts: any, callback: (err: any, response?: any) => void) => {
+  // All Docs 처리
+  api._allDocs = (
+    options: any,
+    callback: (err: any, response?: any) => void
+  ) => {
     const results: any[] = []
 
-    const start = 'startkey' in opts ? opts.startkey : false
-    const end = 'endkey' in opts ? opts.endkey : false
-    const key = 'key' in opts ? opts.key : false
-    const keys = 'keys' in opts ? opts.keys : false
-    const descending = 'descending' in opts ? opts.descending : false
-    let limit = 'limit' in opts ? opts.limit : -1
-    const offset = 'skip' in opts ? opts.skip : 0
-    const inclusiveEnd = opts.inclusive_end !== false
+    const start = 'startkey' in options ? options.startkey : false
+    const end = 'endkey' in options ? options.endkey : false
+    const key = 'key' in options ? options.key : false
+    const keys = 'keys' in options ? options.keys : false
+    const descending = 'descending' in options ? options.descending : false
+    let limit = 'limit' in options ? options.limit : -1
+    const offset = 'skip' in options ? options.skip : 0
+    const inclusiveEnd = options.inclusive_end !== false
 
     let sqlArgs: any[] = []
     const criteria: string[] = []
@@ -395,29 +230,29 @@ function SqlPouch(opts: OpenDatabaseOptions, cb: (err: any) => void) {
       criteria.push(BY_SEQ_STORE + '.deleted = 0')
     }
 
-    readTransaction(async (tx: Transaction) => {
+    ;(async () => {
       const processResult = (rows: any[], results: any[], keys: any) => {
         for (let i = 0, l = rows.length; i < l; i++) {
           const item = rows[i]
           const metadata = safeJsonParse(item.metadata)
           const id = metadata.id
-          const data = unstringifyDoc(item.data, id, item.rev)
+          const data = deserializeDocument(item.data, id, item.rev)
           const winningRev = data._rev
           const doc: any = {
             id: id,
             key: id,
             value: { rev: winningRev },
           }
-          if (opts.include_docs) {
+          if (options.include_docs) {
             doc.doc = data
             doc.doc._rev = winningRev
-            if (opts.conflicts) {
+            if (options.conflicts) {
               const conflicts = collectConflicts(metadata)
               if (conflicts.length) {
                 doc.doc._conflicts = conflicts
               }
             }
-            fetchAttachmentsIfNecessary(doc.doc, opts, api, tx)
+            fetchAttachmentsIfNeeded(doc.doc, options, api, db)
           }
           if (item.deleted) {
             if (keys) {
@@ -447,8 +282,10 @@ function SqlPouch(opts: OpenDatabaseOptions, cb: (err: any) => void) {
       }
 
       try {
-        const totalRows = await countDocs(tx)
-        const updateSeq = opts.update_seq ? await getMaxSeq(tx) : undefined
+        const totalRows = await countTotalDocuments(db)
+        const updateSeq = options.update_seq
+          ? await fetchMaxSequence(db)
+          : undefined
 
         if (limit === 0) {
           limit = 1
@@ -469,7 +306,7 @@ function SqlPouch(opts: OpenDatabaseOptions, cb: (err: any) => void) {
             sqlArgs = sqlArgs.concat(keyChunk)
 
             const sql =
-              select(
+              buildSelectQuery(
                 SELECT_DOCS,
                 [DOC_STORE, BY_SEQ_STORE],
                 DOC_STORE_AND_BY_SEQ_JOINER,
@@ -480,11 +317,11 @@ function SqlPouch(opts: OpenDatabaseOptions, cb: (err: any) => void) {
               limit +
               ' OFFSET ' +
               offset
-            const result = await tx.executeAsync(sql, sqlArgs)
+            const result = await db.query<any>(sql, sqlArgs)
             finishedCount++
-            if (result.rows) {
-              for (let index = 0; index < result.rows.length; index++) {
-                allRows.push(result.rows?.item(index))
+            if (result) {
+              for (let index = 0; index < result.length; index++) {
+                allRows.push(result?.[index])
               }
             }
             if (finishedCount === keyChunks.length) {
@@ -493,7 +330,7 @@ function SqlPouch(opts: OpenDatabaseOptions, cb: (err: any) => void) {
           }
         } else {
           const sql =
-            select(
+            buildSelectQuery(
               SELECT_DOCS,
               [DOC_STORE, BY_SEQ_STORE],
               DOC_STORE_AND_BY_SEQ_JOINER,
@@ -504,11 +341,11 @@ function SqlPouch(opts: OpenDatabaseOptions, cb: (err: any) => void) {
             limit +
             ' OFFSET ' +
             offset
-          const result = await tx.executeAsync(sql, sqlArgs)
+          const result = await db.query<any>(sql, sqlArgs)
           const rows: any[] = []
-          if (result.rows) {
-            for (let index = 0; index < result.rows.length; index++) {
-              rows.push(result.rows.item(index))
+          if (result) {
+            for (let index = 0; index < result.length; index++) {
+              rows.push(result[index])
             }
           }
           processResult(rows, results, keys)
@@ -516,26 +353,26 @@ function SqlPouch(opts: OpenDatabaseOptions, cb: (err: any) => void) {
 
         const returnVal: any = {
           total_rows: totalRows,
-          offset: opts.skip,
+          offset: options.skip,
           rows: results,
         }
 
-        if (opts.update_seq) {
+        if (options.update_seq) {
           returnVal.update_seq = updateSeq
         }
         callback(null, returnVal)
       } catch (e: any) {
         handleSQLiteError(e, callback)
       }
-    })
+    })()
   }
 
-  api._changes = (opts: any): any => {
-    opts = clone(opts)
+  api._changes = (options: any): any => {
+    options = clone(options)
 
-    if (opts.continuous) {
+    if (options.continuous) {
       const id = api._name + ':' + uuid()
-      sqliteChanges.addListener(api._name, id, api, opts)
+      sqliteChanges.addListener(api._name, id, api, options)
       sqliteChanges.notify(api._name)
       return {
         cancel: () => {
@@ -544,9 +381,9 @@ function SqlPouch(opts: OpenDatabaseOptions, cb: (err: any) => void) {
       }
     }
 
-    const descending = opts.descending
-    opts.since = opts.since && !descending ? opts.since : 0
-    let limit = 'limit' in opts ? opts.limit : -1
+    const descending = options.descending
+    options.since = options.since && !descending ? options.since : 0
+    let limit = 'limit' in options ? options.limit : -1
     if (limit === 0) {
       limit = 1
     }
@@ -576,56 +413,59 @@ function SqlPouch(opts: OpenDatabaseOptions, cb: (err: any) => void) {
         BY_SEQ_STORE +
         '.seq'
       const criteria = ['maxSeq > ?']
-      const sqlArgs = [opts.since]
+      const sqlArgs = [options.since]
 
-      if (opts.doc_ids) {
-        criteria.push(DOC_STORE + '.id IN ' + qMarks(opts.doc_ids.length))
-        sqlArgs.push(...opts.doc_ids)
+      if (options.doc_ids) {
+        criteria.push(
+          DOC_STORE + '.id IN ' + generateQuestionMarks(options.doc_ids.length)
+        )
+        sqlArgs.push(...options.doc_ids)
       }
 
       const orderBy = 'maxSeq ' + (descending ? 'DESC' : 'ASC')
-      let sql = select(selectStmt, from, joiner, criteria, orderBy)
-      const filter = filterChange(opts)
+      let sql = buildSelectQuery(selectStmt, from, joiner, criteria, orderBy)
+      const filter = filterChange(options)
 
-      if (!opts.view && !opts.filter) {
+      if (!options.view && !options.filter) {
         sql += ' LIMIT ' + limit
       }
 
-      let lastSeq = opts.since || 0
-      readTransaction(async (tx: Transaction) => {
-        try {
-          const result = await tx.executeAsync(sql, sqlArgs)
+      let lastSeq = options.since || 0
 
-          if (result.rows) {
-            for (let i = 0, l = result.rows.length; i < l; i++) {
-              const item = result.rows.item(i)
+      ;(async () => {
+        try {
+          const result = await db.query<any>(sql, sqlArgs)
+
+          if (result) {
+            for (let i = 0, l = result.length; i < l; i++) {
+              const item = result[i]
               const metadata = safeJsonParse(item.metadata)
               lastSeq = item.maxSeq
 
-              const doc = unstringifyDoc(
+              const doc = deserializeDocument(
                 item.winningDoc,
                 metadata.id,
                 item.winningRev
               )
-              const change = opts.processChange(doc, metadata, opts)
+              const change = options.processChange(doc, metadata, options)
               change.seq = item.maxSeq
 
               const filtered = filter(change)
               if (typeof filtered === 'object') {
-                return opts.complete(filtered)
+                return options.complete(filtered)
               }
 
               if (filtered) {
                 numResults++
-                if (opts.return_docs) {
+                if (options.return_docs) {
                   results.push(change)
                 }
-                if (opts.attachments && opts.include_docs) {
-                  fetchAttachmentsIfNecessary(doc, opts, api, tx, () =>
-                    opts.onChange(change)
+                if (options.attachments && options.include_docs) {
+                  fetchAttachmentsIfNeeded(doc, options, api, db, () =>
+                    options.onChange(change)
                   )
                 } else {
-                  opts.onChange(change)
+                  options.onChange(change)
                 }
               }
               if (numResults === limit) {
@@ -634,23 +474,23 @@ function SqlPouch(opts: OpenDatabaseOptions, cb: (err: any) => void) {
             }
           }
 
-          if (!opts.continuous) {
-            opts.complete(null, {
+          if (!options.continuous) {
+            options.complete(null, {
               results,
               last_seq: lastSeq,
             })
           }
         } catch (e: any) {
-          handleSQLiteError(e, opts.complete)
+          handleSQLiteError(e, options.complete)
         }
-      })
+      })()
     }
 
     fetchChanges()
   }
 
   api._close = (callback: (err?: any) => void) => {
-    closeDB(api._name)
+    db.closeAllConnections()
     callback()
   }
 
@@ -658,41 +498,43 @@ function SqlPouch(opts: OpenDatabaseOptions, cb: (err: any) => void) {
     docId: string,
     attachId: string,
     attachment: any,
-    opts: any,
+    options: any,
     callback: (err: any, response?: any) => void
   ) => {
-    let res: any
-    const tx: Transaction = opts.ctx
-    const digest = attachment.digest
-    const type = attachment.content_type
-    const sql =
-      'SELECT escaped, body AS body FROM ' + ATTACH_STORE + ' WHERE digest=?'
-    tx.executeAsync(sql, [digest]).then((result) => {
-      const item = result.rows?.item(0)
-      const data = item.body
-      if (opts.binary) {
-        res = binStringToBlob(data, type)
-      } else {
-        res = btoa(data)
-      }
-      callback(null, res)
-    })
+    ;(async () => {
+      let res: any
+      const digest = attachment.digest
+      const type = attachment.content_type
+      const sql =
+        'SELECT escaped, body AS body FROM ' + ATTACH_STORE + ' WHERE digest=?'
+      db.query<any>(sql, [digest]).then((result) => {
+        const item = result?.[0]
+        const data = item.body
+        if (options.binary) {
+          res = binStringToBlob(data, type)
+        } else {
+          res = btoa(data)
+        }
+        callback(null, res)
+      })
+    })()
+    // info : options.ctx의 Transaction 무시, 신규 트랙잭션 사용
   }
 
   api._getRevisionTree = (
     docId: string,
     callback: (err: any, rev_tree?: any) => void
   ) => {
-    readTransaction(async (tx: Transaction) => {
+    ;(async () => {
       const sql = 'SELECT json AS metadata FROM ' + DOC_STORE + ' WHERE id = ?'
-      const result = await tx.executeAsync(sql, [docId])
-      if (!result.rows?.length) {
+      const result = await db.query<any>(sql, [docId])
+      if (!result?.length) {
         callback(createError(MISSING_DOC))
       } else {
-        const data = safeJsonParse(result.rows?.item(0).metadata)
+        const data = safeJsonParse(result?.[0]?.metadata)
         callback(null, data.rev_tree)
       }
-    })
+    })()
   }
 
   api._doCompaction = (
@@ -703,30 +545,30 @@ function SqlPouch(opts: OpenDatabaseOptions, cb: (err: any) => void) {
     if (!revs.length) {
       return callback()
     }
-    transaction(async (tx: Transaction) => {
+    db.executeTransaction(async () => {
       try {
         let sql = 'SELECT json AS metadata FROM ' + DOC_STORE + ' WHERE id = ?'
-        const result = await tx.executeAsync(sql, [docId])
-        const metadata = safeJsonParse(result.rows?.item(0).metadata)
+        const result = await db.query<any>(sql, [docId])
+        const metadata = safeJsonParse(result?.[0]?.metadata)
         traverseRevTree(
           metadata.rev_tree,
           (
             isLeaf: boolean,
             pos: number,
             revHash: string,
-            ctx: Transaction,
-            opts: any
+            cdb: SqliteService,
+            options: any
           ) => {
             const rev = pos + '-' + revHash
             if (revs.indexOf(rev) !== -1) {
-              opts.status = 'missing'
+              options.status = 'missing'
             }
           }
         )
         sql = 'UPDATE ' + DOC_STORE + ' SET json = ? WHERE id = ?'
-        await tx.executeAsync(sql, [safeJsonStringify(metadata), docId])
+        await db.execute(sql, [safeJsonStringify(metadata), docId])
 
-        compactRevs(revs, docId, tx)
+        removeOldRevisions(revs, docId, db)
       } catch (e: any) {
         handleSQLiteError(e, callback)
       }
@@ -735,13 +577,13 @@ function SqlPouch(opts: OpenDatabaseOptions, cb: (err: any) => void) {
   }
 
   api._getLocal = (id: string, callback: (err: any, doc?: any) => void) => {
-    readTransaction(async (tx: Transaction) => {
+    ;(async () => {
       try {
         const sql = 'SELECT json, rev FROM ' + LOCAL_STORE + ' WHERE id=?'
-        const res = await tx.executeAsync(sql, [id])
-        if (res.rows?.length) {
-          const item = res.rows.item(0)
-          const doc = unstringifyDoc(item.json, id, item.rev)
+        const res = await db.query<any>(sql, [id])
+        if (res?.length) {
+          const item = res?.[0]
+          const doc = deserializeDocument(item.json, id, item.rev)
           callback(null, doc)
         } else {
           callback(createError(MISSING_DOC))
@@ -749,17 +591,17 @@ function SqlPouch(opts: OpenDatabaseOptions, cb: (err: any) => void) {
       } catch (e: any) {
         handleSQLiteError(e, callback)
       }
-    })
+    })()
   }
 
   api._putLocal = (
     doc: any,
-    opts: any,
+    options: any,
     callback: (err: any, response?: any) => void
   ) => {
-    if (typeof opts === 'function') {
-      callback = opts
-      opts = {}
+    if (typeof options === 'function') {
+      callback = options
+      options = {}
     }
     delete doc._revisions
     const oldRev = doc._rev
@@ -770,10 +612,9 @@ function SqlPouch(opts: OpenDatabaseOptions, cb: (err: any) => void) {
     } else {
       newRev = doc._rev = '0-' + (parseInt(oldRev.split('-')[1], 10) + 1)
     }
-    const json = stringifyDoc(doc)
+    const json = serializeDocument(doc)
 
-    let ret: any
-    const putLocal = async (tx: Transaction) => {
+    db.executeTransaction(async () => {
       try {
         let sql: string
         let values: any[]
@@ -785,162 +626,61 @@ function SqlPouch(opts: OpenDatabaseOptions, cb: (err: any) => void) {
           sql = 'INSERT INTO ' + LOCAL_STORE + ' (id, rev, json) VALUES (?,?,?)'
           values = [id, newRev, json]
         }
-        const res = await tx.executeAsync(sql, values)
-        if (res.rowsAffected) {
-          ret = { ok: true, id: id, rev: newRev }
-          callback(null, ret)
+        const res = await db.execute(sql, values)
+        if (res?.changes) {
+          callback(null, { ok: true, id: id, rev: newRev })
         } else {
           callback(createError(REV_CONFLICT))
         }
       } catch (e: any) {
         handleSQLiteError(e, callback)
       }
-    }
+    })
 
-    if (opts.ctx) {
-      putLocal(opts.ctx)
-    } else {
-      transaction(putLocal)
-    }
+    // info : options.ctx 기능 무시(신규 트랜잭션)
   }
 
   api._removeLocal = (
     doc: any,
-    opts: any,
+    options: any,
     callback: (err: any, response?: any) => void
   ) => {
-    if (typeof opts === 'function') {
-      callback = opts
-      opts = {}
+    if (typeof options === 'function') {
+      callback = options
+      options = {}
     }
-    let ret: any
-
-    const removeLocal = async (tx: Transaction) => {
+    db.executeTransaction(async () => {
       try {
         const sql = 'DELETE FROM ' + LOCAL_STORE + ' WHERE id=? AND rev=?'
         const params = [doc._id, doc._rev]
-        const res = await tx.executeAsync(sql, params)
-        if (!res.rowsAffected) {
+        const res = await db.execute(sql, params)
+        if (!(res?.changes && res.changes > 0)) {
           return callback(createError(MISSING_DOC))
         }
-        ret = { ok: true, id: doc._id, rev: '0-0' }
-        callback(null, ret)
+        callback(null, { ok: true, id: doc._id, rev: '0-0' })
       } catch (e: any) {
         handleSQLiteError(e, callback)
       }
-    }
+    })
 
-    if (opts.ctx) {
-      removeLocal(opts.ctx)
-    } else {
-      transaction(removeLocal)
-    }
+    // info : options.ctx 기능 무시(신규 트랜잭션)
   }
 
-  api._destroy = (opts: any, callback: (err: any, response?: any) => void) => {
+  api._destroy = (
+    options: any,
+    callback: (err: any, response?: any) => void
+  ) => {
     sqliteChanges.removeAllListeners(api._name)
-    transaction(async (tx: Transaction) => {
+    db.executeTransaction(async () => {
       try {
-        const stores = [
-          DOC_STORE,
-          BY_SEQ_STORE,
-          ATTACH_STORE,
-          META_STORE,
-          LOCAL_STORE,
-          ATTACH_AND_SEQ_STORE,
-        ]
-        stores.forEach((store) => {
-          tx.execute('DROP TABLE IF EXISTS ' + store, [])
-        })
+        for (const query of SQL.DROP_TABLES) {
+          await db.execute(query, [])
+        }
         callback(null, { ok: true })
       } catch (e: any) {
         handleSQLiteError(e, callback)
       }
     })
-  }
-
-  function fetchAttachmentsIfNecessary(
-    doc: any,
-    opts: any,
-    api: any,
-    txn: any,
-    cb?: () => void
-  ) {
-    const attachments = Object.keys(doc._attachments || {})
-    if (!attachments.length) {
-      return cb && cb()
-    }
-    let numDone = 0
-
-    const checkDone = () => {
-      if (++numDone === attachments.length && cb) {
-        cb()
-      }
-    }
-
-    const fetchAttachment = (doc: any, att: string) => {
-      const attObj = doc._attachments[att]
-      const attOpts = { binary: opts.binary, ctx: txn }
-      api._getAttachment(doc._id, att, attObj, attOpts, (_: any, data: any) => {
-        doc._attachments[att] = Object.assign(
-          pick(attObj, ['digest', 'content_type']),
-          { data }
-        )
-        checkDone()
-      })
-    }
-
-    attachments.forEach((att) => {
-      if (opts.attachments && opts.include_docs) {
-        fetchAttachment(doc, att)
-      } else {
-        doc._attachments[att].stub = true
-        checkDone()
-      }
-    })
-  }
-
-  async function getMaxSeq(tx: Transaction): Promise<number> {
-    const sql = 'SELECT MAX(seq) AS seq FROM ' + BY_SEQ_STORE
-    const res = await tx.executeAsync(sql, [])
-    const updateSeq = res.rows?.item(0).seq || 0
-    return updateSeq
-  }
-
-  async function countDocs(tx: Transaction): Promise<number> {
-    const sql = select(
-      'COUNT(' + DOC_STORE + ".id) AS 'num'",
-      [DOC_STORE, BY_SEQ_STORE],
-      DOC_STORE_AND_BY_SEQ_JOINER,
-      BY_SEQ_STORE + '.deleted=0'
-    )
-    const result = await tx.executeAsync(sql, [])
-    return result.rows?.item(0).num || 0
-  }
-
-  async function latest(
-    tx: Transaction,
-    id: string,
-    rev: string,
-    callback: (latestRev: string) => void,
-    finish: (err: any) => void
-  ) {
-    const sql = select(
-      SELECT_DOCS,
-      [DOC_STORE, BY_SEQ_STORE],
-      DOC_STORE_AND_BY_SEQ_JOINER,
-      DOC_STORE + '.id=?'
-    )
-    const sqlArgs = [id]
-
-    const results = await tx.executeAsync(sql, sqlArgs)
-    if (!results.rows?.length) {
-      const err = createError(MISSING_DOC, 'missing')
-      return finish(err)
-    }
-    const item = results.rows.item(0)
-    const metadata = safeJsonParse(item.metadata)
-    callback(getLatest(rev, metadata))
   }
 }
 

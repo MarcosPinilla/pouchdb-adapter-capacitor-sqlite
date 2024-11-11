@@ -15,24 +15,42 @@ import {
   ATTACH_AND_SEQ_STORE,
 } from './constants'
 
-import { select, stringifyDoc, compactRevs, handleSQLiteError } from './utils'
-import type { Transaction } from '@op-engineering/op-sqlite'
 import {
-  DBOptions,
-  DocInfo,
-  Options,
-  Request,
-} from './types/bulkDocs.interface'
+  buildSelectQuery,
+  serializeDocument,
+  removeOldRevisions,
+  handleSQLiteError,
+} from './utils'
+import { SqliteService } from './_sqlite'
+interface DocInfo {
+  _id: string
+  metadata: any
+  data: any
+  stemmedRevs?: string[]
+  error?: any
+}
+
+interface DBOptions {
+  revs_limit?: number
+}
+
+interface Request {
+  docs: any[]
+}
+
+interface Options {
+  new_edits: boolean
+}
 
 async function sqliteBulkDocs(
   dbOpts: DBOptions,
   req: Request,
-  opts: Options,
+  options: Options,
   api: any,
-  transaction: (fn: (tx: Transaction) => Promise<void>) => Promise<void>,
+  db: SqliteService,
   sqliteChanges: any
 ): Promise<any> {
-  const newEdits = opts.new_edits
+  const newEdits = options.new_edits
   const userDocs = req.docs
 
   const docInfos: DocInfo[] = userDocs.map((doc) => {
@@ -47,7 +65,6 @@ async function sqliteBulkDocs(
     throw docInfoErrors[0]
   }
 
-  let tx: Transaction
   const results = new Array(docInfos.length)
   const fetchedDocs = new Map<string, any>()
 
@@ -55,8 +72,8 @@ async function sqliteBulkDocs(
     console.log('verify attachment:', digest)
     const sql =
       'SELECT count(*) as cnt FROM ' + ATTACH_STORE + ' WHERE digest=?'
-    const result = await tx.executeAsync(sql, [digest])
-    if (result.rows?.item(0).cnt === 0) {
+    const result = await db.query<any>(sql, [digest])
+    if (result?.[0]?.cnt === 0) {
       const err = createError(
         MISSING_STUB,
         'unknown stub attachment with digest ' + digest
@@ -101,7 +118,7 @@ async function sqliteBulkDocs(
   ) {
     console.log('writeDoc:', { ...docInfo, data: null })
 
-    async function dataWritten(tx: Transaction, seq: number) {
+    async function dataWritten(db: SqliteService, seq: number) {
       const id = docInfo.metadata.id
 
       let revsToCompact = docInfo.stemmedRevs || []
@@ -109,7 +126,7 @@ async function sqliteBulkDocs(
         revsToCompact = compactTree(docInfo.metadata).concat(revsToCompact)
       }
       if (revsToCompact.length) {
-        compactRevs(revsToCompact, id, tx)
+        removeOldRevisions(revsToCompact, id, db)
       }
 
       docInfo.metadata.seq = seq
@@ -132,7 +149,7 @@ async function sqliteBulkDocs(
       const params = isUpdate
         ? [metadataStr, seq, winningRev, id]
         : [id, seq, seq, metadataStr]
-      await tx.executeAsync(sql, params)
+      await db.execute(sql, params)
       results[resultsIdx] = {
         ok: true,
         id: docInfo.metadata.id,
@@ -152,7 +169,7 @@ async function sqliteBulkDocs(
         const sql =
           'INSERT INTO ' + ATTACH_AND_SEQ_STORE + ' (digest, seq) VALUES (?,?)'
         const sqlArgs = [data._attachments[att].digest, seq]
-        return tx.executeAsync(sql, sqlArgs)
+        return db.execute(sql, sqlArgs)
       }
 
       await Promise.all(attsToAdd.map((att) => add(att)))
@@ -182,7 +199,7 @@ async function sqliteBulkDocs(
 
     const id = data._id
     const rev = data._rev
-    const json = stringifyDoc(data)
+    const json = serializeDocument(data)
     const sql =
       'INSERT INTO ' +
       BY_SEQ_STORE +
@@ -190,18 +207,23 @@ async function sqliteBulkDocs(
     const sqlArgs = [id, rev, json, deletedInt]
 
     try {
-      const result = await tx.executeAsync(sql, sqlArgs)
-      const seq = result.insertId
+      const result = await db.execute(sql, sqlArgs)
+      const seq = result?.lastId
       if (typeof seq === 'number') {
         await insertAttachmentMappings(seq)
-        await dataWritten(tx, seq)
+        await dataWritten(db, seq)
       }
     } catch (e) {
       // constraint error, recover by updating instead (see #1638)
       // https://github.com/pouchdb/pouchdb/issues/1638
-      const fetchSql = select('seq', BY_SEQ_STORE, null, 'doc_id=? AND rev=?')
-      const res = await tx.executeAsync(fetchSql, [id, rev])
-      const seq = res.rows?.item(0).seq
+      const fetchSql = buildSelectQuery(
+        'seq',
+        BY_SEQ_STORE,
+        null,
+        'doc_id=? AND rev=?'
+      )
+      const res = await db.query<any>(fetchSql, [id, rev])
+      const seq = res?.[0]?.seq
       console.log(
         `Got a constraint error, updating instead: seq=${seq}, id=${id}, rev=${rev}`
       )
@@ -210,9 +232,9 @@ async function sqliteBulkDocs(
         BY_SEQ_STORE +
         ' SET json=?, deleted=? WHERE doc_id=? AND rev=?;'
       const sqlArgs = [json, deletedInt, id, rev]
-      await tx.executeAsync(sql, sqlArgs)
+      await db.execute(sql, sqlArgs)
       await insertAttachmentMappings(seq)
-      await dataWritten(tx, seq)
+      await dataWritten(db, seq)
     }
   }
 
@@ -224,7 +246,7 @@ async function sqliteBulkDocs(
         docInfos,
         api,
         fetchedDocs,
-        tx,
+        db,
         results,
         (
           docInfo: DocInfo,
@@ -248,7 +270,7 @@ async function sqliteBulkDocs(
             ).then(callback, callback)
           })
         },
-        opts,
+        options,
         (err?: any) => {
           if (!err) resolve()
           else reject(err)
@@ -265,12 +287,12 @@ async function sqliteBulkDocs(
         continue
       }
       const id = docInfo.metadata.id
-      const result = await tx.executeAsync(
+      const result = await db.query<any>(
         'SELECT json FROM ' + DOC_STORE + ' WHERE id = ?',
         [id]
       )
-      if (result.rows?.length) {
-        const metadata = safeJsonParse(result.rows.item(0).json)
+      if (result?.length) {
+        const metadata = safeJsonParse(result?.[0]?.json)
         fetchedDocs.set(id, metadata)
       }
     }
@@ -279,11 +301,11 @@ async function sqliteBulkDocs(
   async function saveAttachment(digest: string, data: any) {
     console.log('saveAttachment:', digest)
     let sql = 'SELECT digest FROM ' + ATTACH_STORE + ' WHERE digest=?'
-    const result = await tx.executeAsync(sql, [digest])
-    if (result.rows?.length) return
+    const result = await db.query<any>(sql, [digest])
+    if (result?.length) return
     sql =
       'INSERT INTO ' + ATTACH_STORE + ' (digest, body, escaped) VALUES (?,?,0)'
-    await tx.executeAsync(sql, [digest, data])
+    await db.execute(sql, [digest, data])
   }
 
   await new Promise<void>((resolve, reject) => {
@@ -293,11 +315,10 @@ async function sqliteBulkDocs(
     })
   })
 
-  await transaction(async (txn: Transaction) => {
+  await db.executeTransaction(async () => {
     await verifyAttachments()
 
     try {
-      tx = txn
       await fetchExistingDocs()
       await websqlProcessDocs()
       sqliteChanges.notify(api._name)

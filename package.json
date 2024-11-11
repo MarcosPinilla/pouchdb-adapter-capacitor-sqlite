@@ -79,6 +79,7 @@
   },
   "dependencies": {
     "@capacitor-community/sqlite": "^6.0.2",
+    "@op-engineering/op-sqlite": "^10.0.0-tokenizers-beta3",
     "pouchdb-adapter-utils": "^8.0.1",
     "pouchdb-binary-utils": "^8.0.1",
     "pouchdb-errors": "^8.0.1",
