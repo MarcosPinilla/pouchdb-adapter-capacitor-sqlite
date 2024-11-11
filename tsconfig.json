@@ -25,5 +25,5 @@
     "target": "esnext"
     // "verbatimModuleSyntax": true
   },
-  "include": ["definitions/pouchdb.d.ts"]
+  "include": ["pouchdb.d.ts"]
 }
