@@ -237,7 +237,7 @@ function SqlPouch(options: PluginOptions, cb: (err: any) => void) {
           const metadata = safeJsonParse(item.metadata)
           const id = metadata.id
           const data = deserializeDocument(item.data, id, item.rev)
-          const winningRev = data._rev
+          const winningRev = data['_rev']
           const doc: any = {
             id: id,
             key: id,

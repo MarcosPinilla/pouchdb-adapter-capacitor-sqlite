@@ -197,8 +197,8 @@ async function sqliteBulkDocs(
     const data = docInfo.data
     const deletedInt = newRevIsDeleted ? 1 : 0
 
-    const id = data._id
-    const rev = data._rev
+    const id = data['_id']
+    const rev = data['_rev']
     const json = serializeDocument(data)
     const sql =
       'INSERT INTO ' +
