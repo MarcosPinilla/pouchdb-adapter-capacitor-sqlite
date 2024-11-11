@@ -2,7 +2,7 @@
   "compilerOptions": {
     "rootDir": ".",
     "paths": {
-      "pouchdb-adapter-react-native-sqlite": ["./src/index"]
+      "pouchdb-adapter-capacitor-sqlite": ["./src/index"]
     },
     "allowUnreachableCode": false,
     "allowUnusedLabels": true,
@@ -22,7 +22,8 @@
     "resolveJsonModule": true,
     "skipLibCheck": true,
     "strict": true,
-    "target": "esnext",
+    "target": "esnext"
     // "verbatimModuleSyntax": true
-  }
+  },
+  "include": ["definitions/pouchdb.d.ts"]
 }
