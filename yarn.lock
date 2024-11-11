@@ -7066,9 +7066,9 @@ __metadata:
   languageName: node
   linkType: hard
 
-"pouchdb-adapter-adapter-sqlite@workspace:.":
+"pouchdb-adapter-capacitor-sqlite@workspace:.":
   version: 0.0.0-use.local
-  resolution: "pouchdb-adapter-adapter-sqlite@workspace:."
+  resolution: "pouchdb-adapter-capacitor-sqlite@workspace:."
   dependencies:
     "@babel/eslint-parser": ^7.24.7
     "@capacitor-community/sqlite": ^6.0.2

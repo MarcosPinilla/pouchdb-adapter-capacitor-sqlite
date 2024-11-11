@@ -1,5 +1,5 @@
 {
-  "name": "pouchdb-adapter-adapter-sqlite",
+  "name": "pouchdb-adapter-capacitor-sqlite",
   "version": "1.0.0",
   "description": "PouchDB adapter for Capacitor SQLite",
   "main": "lib/commonjs/index",
