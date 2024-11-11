@@ -19,8 +19,8 @@ import { SqliteService } from './_sqlite'
  * @returns - 변환된 JSON 문자열
  */
 export function serializeDocument(doc: Record<string, any>): string {
-  delete doc._id // 문서에서 _id 필드 삭제
-  delete doc._rev // 문서에서 _rev 필드 삭제
+  delete doc['_id'] // 문서에서 _id 필드 삭제
+  delete doc['_rev'] // 문서에서 _rev 필드 삭제
   return JSON.stringify(doc) // 나머지 문서 객체를 JSON 문자열로 변환하여 반환
 }
 
