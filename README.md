@@ -6,6 +6,10 @@ It's much faster than AsyncStorage.
 As of v4.0.0, it no longer requires `@craftzdog/pouchdb-adapter-websql-core`.
 It now directly uses op-sqlite, so it's more efficient.
 
+## Source
+
+https://github.com/lucasyvas/pouchdb-adapter-node-websql/tree/master/pouchdb-adapter-websql-core
+
 ## How to use
 
 ### Installation

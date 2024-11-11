@@ -2,10 +2,7 @@
   "name": "pouchdb-adapter-capacitor-sqlite",
   "version": "1.0.0",
   "description": "PouchDB adapter for Capacitor SQLite",
-  "main": "lib/commonjs/index",
-  "module": "lib/module/index",
-  "types": "lib/typescript/src/index.d.ts",
-  "react-native": "src/index",
+  "main": "src/index",
   "source": "src/index",
   "files": [
     "src",
@@ -20,9 +17,6 @@
     "!android/gradlew",
     "!android/gradlew.bat",
     "!android/local.properties",
-    "!**/__tests__",
-    "!**/__fixtures__",
-    "!**/__mocks__",
     "!**/.*"
   ],
   "scripts": {
