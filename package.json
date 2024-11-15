@@ -78,7 +78,8 @@
     "pouchdb-errors": "^8.0.1",
     "pouchdb-json": "^8.0.1",
     "pouchdb-merge": "^8.0.1",
-    "pouchdb-utils": "^8.0.1"
+    "pouchdb-utils": "^8.0.1",
+    "uuid": "^11.0.3"
   },
   "packageManager": "yarn@3.6.1",
   "commitlint": {

@@ -1,5 +1,5 @@
 import { SQL } from './_queries'
-import { uuid } from 'pouchdb-utils'
+import { v4 as uuidv4 } from 'uuid'
 import { ADAPTER_VERSION, META_STORE } from './constants'
 import { SqliteService } from './_sqlite'
 
@@ -41,7 +41,7 @@ async function onGetVersion(db: SqliteService, dbVersion: number) {
 
 async function createInitialSchema(db: SqliteService) {
   SQL.CREATE_TABLES.forEach((sql) => db.execute(sql))
-  const instanceId = uuid()
+  const instanceId = uuidv4()
   await db.execute(SQL.INSERT_INIT_SEQ, [
     META_STORE,
     ADAPTER_VERSION,

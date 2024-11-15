@@ -1,9 +1,5 @@
-import {
-  clone,
-  filterChange,
-  changesHandler as Changes,
-  uuid,
-} from 'pouchdb-utils'
+import { clone, filterChange, changesHandler as Changes } from 'pouchdb-utils'
+import { v4 as uuidv4 } from 'uuid'
 import { collectConflicts, traverseRevTree } from 'pouchdb-merge'
 import { safeJsonParse, safeJsonStringify } from 'pouchdb-json'
 import {
@@ -371,7 +367,7 @@ function SqlPouch(options: PluginOptions, cb: (err: any) => void) {
     options = clone(options)
 
     if (options.continuous) {
-      const id = api._name + ':' + uuid()
+      const id = api._name + ':' + uuidv4()
       sqliteChanges.addListener(api._name, id, api, options)
       sqliteChanges.notify(api._name)
       return {
